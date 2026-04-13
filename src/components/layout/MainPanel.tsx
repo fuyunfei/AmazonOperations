@@ -14,9 +14,9 @@ export default function MainPanel() {
   const isCategory  = categoryKey !== null;
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div className="flex-1 flex flex-col overflow-hidden">
       {/* Panel content */}
-      <div style={{ flex: 1, overflow: "auto", background: "#fff" }}>
+      <div className="flex-1 overflow-auto bg-background">
         {activeNav === "overview" && <OverviewPanel key="overview" />}
         {activeNav === "chat"     && <ChatPanel     key="chat" />}
         {isCategory && activeFuncTab === "kpi"       && <KPIPanel       key={categoryKey} />}
