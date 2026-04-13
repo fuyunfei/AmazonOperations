@@ -16,6 +16,7 @@ import { parseAdPlacement }  from "./parseAdPlacement"
 import { parseInventory }    from "./parseInventory"
 import { parseCostMgmt }     from "./parseCostMgmt"
 import { parseAbaSearch }    from "./parseAbaSearch"
+import { parseKeywordMonitor, extractSnapshotDateFromFilename } from "./parseKeywordMonitor"
 import type { FileType }     from "./identifier"
 
 // ── 类型定义 ─────────────────────────────────────────────────────────────
@@ -146,5 +147,9 @@ export const contextParsers: Partial<Record<FileType, ContextParser>> = {
       snapshotDate,
     }
   },
-  // keyword_monitor: 暂无 parser，上传时返回错误
+  keyword_monitor: (buf, filename = "") => ({
+    // D2 = "All"，非日期；snapshotDate 从文件名提取
+    rows:         parseKeywordMonitor(buf, filename),
+    snapshotDate: extractSnapshotDateFromFilename(filename),
+  }),
 }

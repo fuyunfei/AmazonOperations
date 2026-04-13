@@ -98,6 +98,28 @@ const CHAT_SUGGESTIONS = [
   "库存断货风险有哪些？",
 ];
 
+const MOCK_SESSIONS = [
+  { id: "s1", title: "床垫 ACOS 为什么这么高", updatedAt: "10:32" },
+  { id: "s2", title: "广告优化该先做什么",     updatedAt: "昨天"  },
+  { id: "s3", title: "Queen 和 Full 哪个表现更好", updatedAt: "04-10" },
+];
+
+const MOCK_MESSAGES = {
+  s1: [
+    { role: "user",      text: "床垫 ACOS 为什么这么高？" },
+    { role: "tool_call", tool: "get_search_terms", input: '{"filter":"high_acos"}', status: "done", summary: "返回 22 条零成交高点击词" },
+    { role: "tool_call", tool: "get_ad_campaigns", input: '{"filter":"high_acos"}', status: "done", summary: "5 个活动，最高花费 $889"    },
+    { role: "assistant", text: `基于搜索词重构报表（30天数据），Queen款ACOS为82.4%，主要原因：\n\n1. 广泛匹配「sofa mattress」活动花费$889，ACOS 228%，是最大花费黑洞\n2. 30天内22个搜索词累计点击≥15次但0成交（触发P0规则）\n3. SD竞品详情页拦截活动ACOS 106%，转化效率低\n\n建议按P0优先级立即执行：\n• 暂停零成交高点击词（预计每周节省$30-90/词）\n• 降低「sofa mattress」广泛组出价10-15%\n• 考虑暂停SD竞品拦截活动，预算转移到精确词组` },
+  ],
+  s2: [
+    { role: "user",      text: "广告优化该先做什么？" },
+    { role: "tool_call", tool: "get_alerts",       input: '{"level":"all"}',        status: "done", summary: "3 红 4 黄，共 7 条告警" },
+    { role: "tool_call", tool: "get_search_terms", input: '{"filter":"zero_conv"}', status: "done", summary: "22 条零成交词"           },
+    { role: "assistant", text: `按优先级排序的本周广告优化清单：\n\nP0 止血（立即）：\n• 否定22个零成交高点击词 → 预计止血$200+/月\n• 精确否定无效搜索词（花费>$20且0成交）\n\nP1 当日优化：\n• 「sofa mattress replacement」精确词ACOS 92% → 出价从$1.80降至$1.08-1.26\n• 排查CTR<0.2%的高曝光词 → 检查主图和定价竞争力\n\nP2 本周内：\n• 「mattress for sleeper sofa」ACOS 28%、CVR高 → 出价提15-20%扩量\n• 处理65组品类内部竞争词 → 在低效ASIN否定` },
+  ],
+  s3: [],
+};
+
 /* ═══════════════════════════
    STYLES
    ═══════════════════════════ */
@@ -333,76 +355,269 @@ function InventoryPanel({ catId }) {
   );
 }
 
-function ChatPanel() {
-  const [messages, setMessages] = useState([]);
-  const [input,    setInput]    = useState("");
+function ChatPanel({ model }) {
+  const [sessions,   setSessions]   = useState(MOCK_SESSIONS);
+  const [activeId,   setActiveId]   = useState("s1");
+  const [msgs,       setMsgs]       = useState(MOCK_MESSAGES);
+  const [input,      setInput]      = useState("");
+  const [streaming,  setStreaming]  = useState(false);
+  const [streamText, setStreamText] = useState("");
 
-  const sendMessage = (text) => {
-    const msg = text || input;
-    if (!msg.trim()) return;
-    setMessages(prev => [
-      ...prev,
-      { role: "user",      text: msg },
-      { role: "assistant", text: generateResponse(msg) },
-    ]);
+  const activeSession = sessions.find(s => s.id === activeId);
+  const messages = msgs[activeId] || [];
+
+  const newSession = () => {
+    const id = "s" + Date.now();
+    setSessions(prev => [{ id, title: "新对话", updatedAt: "刚刚" }, ...prev]);
+    setMsgs(prev => ({ ...prev, [id]: [] }));
+    setActiveId(id);
+  };
+
+  const send = (text) => {
+    const q = text || input;
+    if (!q.trim() || streaming) return;
     setInput("");
+    const isFirst = !(msgs[activeId]?.length);
+    setMsgs(prev => ({ ...prev, [activeId]: [...(prev[activeId] || []), { role: "user", text: q }] }));
+    if (isFirst) setSessions(prev => prev.map(s => s.id === activeId ? { ...s, title: q.slice(0, 18) } : s));
+    setStreaming(true);
+    runAgentLoop(q, activeId);
+  };
+
+  const runAgentLoop = (q, sid) => {
+    // Determine tool plan by question keywords
+    const toolPlan =
+      (q.includes("ACOS") || q.includes("为什么")) ? [
+        { tool: "get_search_terms", input: '{"filter":"high_acos"}', summary: "返回 22 条零成交高点击词" },
+        { tool: "get_ad_campaigns", input: '{"filter":"high_acos"}', summary: "5 个活动，最高花费 $889"  },
+      ] :
+      (q.includes("广告") && q.includes("先做")) ? [
+        { tool: "get_alerts",       input: '{"level":"all"}',        summary: "3 红 4 黄，共 7 条告警" },
+        { tool: "get_search_terms", input: '{"filter":"zero_conv"}', summary: "22 条零成交词"           },
+      ] :
+      (q.includes("库存") || q.includes("断货")) ? [
+        { tool: "get_inventory", input: '{}',                   summary: "Queen 123件，Full 153件，FBM" },
+        { tool: "get_metrics",   input: '{"time_window":"w7"}', summary: "近7天日均销量 ~0.5单"         },
+      ] :
+      (q.includes("Queen") || q.includes("Full")) ? [
+        { tool: "get_metrics",      input: '{"time_window":"d30"}', summary: "30天 GMV、广告数据"  },
+        { tool: "get_ad_campaigns", input: '{}',                   summary: "两款广告活动详情"      },
+      ] : [
+        { tool: "get_metrics", input: '{"time_window":"d30"}', summary: "账号级 KPI 汇总" },
+      ];
+
+    const responseText = generateResponse(q);
+    let delay = 0;
+
+    // Step 1: tool_start → tool_done for each tool (sequential)
+    toolPlan.forEach(t => {
+      setTimeout(() => {
+        setMsgs(prev => ({
+          ...prev,
+          [sid]: [...(prev[sid] || []), { role: "tool_call", tool: t.tool, input: t.input, status: "loading", summary: "" }],
+        }));
+      }, delay += 350);
+      setTimeout(() => {
+        setMsgs(prev => {
+          const list = [...(prev[sid] || [])];
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].role === "tool_call" && list[i].tool === t.tool && list[i].status === "loading") {
+              list[i] = { ...list[i], status: "done", summary: t.summary };
+              break;
+            }
+          }
+          return { ...prev, [sid]: list };
+        });
+      }, delay += 550);
+    });
+
+    // Step 2: stream assistant text (simulates text_delta SSE events)
+    setTimeout(() => {
+      let n = 0;
+      const iv = setInterval(() => {
+        n += 4;
+        setStreamText(responseText.slice(0, n));
+        if (n >= responseText.length) {
+          clearInterval(iv);
+          setMsgs(prev => ({ ...prev, [sid]: [...(prev[sid] || []), { role: "assistant", text: responseText }] }));
+          setStreamText("");
+          setStreaming(false);
+          setSessions(prev => prev.map(s => s.id === sid ? { ...s, updatedAt: "刚刚" } : s));
+        }
+      }, 25);
+    }, delay + 300);
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "16px 24px 0" }}>
-        <div style={{ fontSize: 11, color: C.textDim, display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ background: C.accentSoft, color: C.accent, padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>账号级</span>
-          运营手册 SOP · 全部已上传报表
+    <div style={{ display: "flex", height: "100%" }}>
+
+      {/* ── Left: Session list ── */}
+      <div style={{
+        width: 200, borderRight: `1px solid ${C.border}`,
+        display: "flex", flexDirection: "column", flexShrink: 0, background: C.sidebar,
+      }}>
+        <div style={{ padding: "12px 10px", borderBottom: `1px solid ${C.border}` }}>
+          <button onClick={newSession} style={{
+            width: "100%", padding: "8px 0",
+            background: C.accent, color: "#fff", border: "none",
+            borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+          }}>
+            <span style={{ fontSize: 15, lineHeight: 1 }}>+</span> 新建对话
+          </button>
+        </div>
+        <div style={{ flex: 1, overflow: "auto" }}>
+          {sessions.map(s => {
+            const active = s.id === activeId;
+            return (
+              <div key={s.id} onClick={() => setActiveId(s.id)} style={{
+                padding: "10px 12px", cursor: "pointer",
+                borderLeft: `3px solid ${active ? C.accent : "transparent"}`,
+                background: active ? C.accentSoft : "transparent",
+                borderBottom: `1px solid ${C.border}`,
+              }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = C.sidebarHover; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+              >
+                <div style={{
+                  fontSize: 12, fontWeight: active ? 600 : 400,
+                  color: active ? C.sidebarTextActive : C.text,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginBottom: 2,
+                }}>{s.title}</div>
+                <div style={{ fontSize: 10, color: C.textDim }}>{s.updatedAt}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "16px 24px" }}>
-        {messages.length === 0 ? (
-          <div style={{ paddingTop: 40, textAlign: "center" }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>💬</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Chat</div>
-            <div style={{ fontSize: 12, color: C.textSec, maxWidth: 360, margin: "0 auto 24px" }}>
-              基于已上传的全部报表和运营手册规则，分析任意品类或 ASIN
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
-              {CHAT_SUGGESTIONS.map((s, i) => (
-                <button key={i} onClick={() => sendMessage(s)} style={{
-                  background: C.bg, border: `1px solid ${C.border}`, borderRadius: 20,
-                  padding: "7px 14px", fontSize: 12, color: C.textSec, cursor: "pointer",
-                }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = C.border;  e.currentTarget.style.color = C.textSec; }}
-                >{s}</button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          messages.map((m, i) => (
-            <div key={i} style={{ marginBottom: 16, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-              <div style={{
-                maxWidth: "80%", background: m.role === "user" ? C.accent : C.bg,
-                color: m.role === "user" ? "#fff" : C.text,
-                borderRadius: 12, padding: "10px 14px", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap",
-              }}>{m.text}</div>
-            </div>
-          ))
-        )}
-      </div>
+      {/* ── Right: Conversation area ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
 
-      <div style={{ padding: "12px 24px 16px", borderTop: `1px solid ${C.border}` }}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && sendMessage()}
-            placeholder="输入问题，可涉及任何品类或 ASIN..."
-            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: "none", color: C.text, background: C.bg }}
-          />
-          <button onClick={() => sendMessage()} style={{
-            background: C.accent, color: "#fff", border: "none",
-            borderRadius: 8, padding: "0 18px", fontSize: 13, fontWeight: 600, cursor: "pointer",
-          }}>发送</button>
+        {/* Header: session title + model indicator */}
+        <div style={{
+          padding: "10px 20px", borderBottom: `1px solid ${C.border}`,
+          display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+              {activeSession?.title || "新对话"}
+            </span>
+            <span style={{ fontSize: 10, background: C.accentSoft, color: C.accent, padding: "1px 7px", borderRadius: 4, fontWeight: 600 }}>
+              全部报表
+            </span>
+          </div>
+          <span style={{ fontSize: 10, color: C.textDim, fontFamily: "monospace" }}>{model}</span>
+        </div>
+
+        {/* Messages */}
+        <div style={{ flex: 1, overflow: "auto", padding: "16px 24px" }}>
+          {messages.length === 0 && !streaming ? (
+            /* Empty state with quick prompts */
+            <div style={{ paddingTop: 40, textAlign: "center" }}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>💬</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.text, marginBottom: 4 }}>Chat</div>
+              <div style={{ fontSize: 12, color: C.textSec, maxWidth: 360, margin: "0 auto 24px" }}>
+                基于已上传的全部报表和运营手册，分析任意品类或 ASIN
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                {CHAT_SUGGESTIONS.map((s, i) => (
+                  <button key={i} onClick={() => send(s)} style={{
+                    background: C.bg, border: `1px solid ${C.border}`, borderRadius: 20,
+                    padding: "7px 14px", fontSize: 12, color: C.textSec, cursor: "pointer",
+                  }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = C.border;  e.currentTarget.style.color = C.textSec; }}
+                  >{s}</button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {messages.map((m, i) => {
+                /* Tool call bubble */
+                if (m.role === "tool_call") return (
+                  <div key={i} style={{ margin: "5px 0" }}>
+                    <div style={{
+                      display: "inline-flex", alignItems: "center", gap: 7,
+                      padding: "5px 11px",
+                      background: m.status === "loading" ? C.accentSoft : C.bg,
+                      border: `1px solid ${m.status === "loading" ? C.accent : C.border}`,
+                      borderRadius: 8,
+                    }}>
+                      <span style={{ color: m.status === "loading" ? C.accent : C.green, fontSize: 13 }}>
+                        {m.status === "loading" ? "⟳" : "✓"}
+                      </span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: C.accent }}>
+                        {m.tool}()
+                      </span>
+                      <span style={{ color: C.textDim, fontSize: 11 }}>
+                        {m.status === "loading" ? "执行中..." : `— ${m.summary}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+                /* User / assistant bubble */
+                return (
+                  <div key={i} style={{ marginBottom: 12, display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                    <div style={{
+                      maxWidth: "80%",
+                      background: m.role === "user" ? C.accent : C.bg,
+                      color: m.role === "user" ? "#fff" : C.text,
+                      borderRadius: 12, padding: "10px 14px",
+                      fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                    }}>{m.text}</div>
+                  </div>
+                );
+              })}
+              {/* Streaming text bubble (simulates text_delta SSE) */}
+              {streaming && streamText && (
+                <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-start" }}>
+                  <div style={{
+                    maxWidth: "80%", background: C.bg, color: C.text,
+                    borderRadius: 12, padding: "10px 14px",
+                    fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                  }}>
+                    {streamText}
+                    <span style={{
+                      display: "inline-block", width: 2, height: "1em",
+                      background: C.accent, marginLeft: 1, verticalAlign: "text-bottom",
+                    }} />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Input bar */}
+        <div style={{ padding: "12px 24px 16px", borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && !streaming && send()}
+              disabled={streaming}
+              placeholder={streaming ? "Agent 执行中..." : "输入问题，可涉及任何品类或 ASIN..."}
+              style={{
+                flex: 1, padding: "10px 14px", borderRadius: 8,
+                border: `1px solid ${C.border}`, fontSize: 13, outline: "none",
+                color: C.text, background: streaming ? C.funcBar : C.bg,
+                opacity: streaming ? 0.6 : 1,
+              }}
+            />
+            {streaming ? (
+              <button onClick={() => { setStreaming(false); setStreamText(""); }} style={{
+                background: C.red, color: "#fff", border: "none",
+                borderRadius: 8, padding: "0 18px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+              }}>取消</button>
+            ) : (
+              <button onClick={() => send()} style={{
+                background: C.accent, color: "#fff", border: "none",
+                borderRadius: 8, padding: "0 18px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+              }}>发送</button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -620,7 +835,7 @@ export default function App() {
 
   const renderContent = () => {
     if (activeNav === "overview") return <OverviewPanel />;
-    if (activeNav === "chat")     return <ChatPanel />;
+    if (activeNav === "chat")     return <ChatPanel model={model} />;
     switch (activeFunc) {
       case "kpi":       return <KPIPanel       catId={activeNav} />;
       case "alerts":    return <AlertsPanel    catId={activeNav} />;

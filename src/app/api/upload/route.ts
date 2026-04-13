@@ -49,13 +49,6 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    if (fileType === "keyword_monitor") {
-      return NextResponse.json(
-        { error: "关键词监控报表 parser 尚未实现，敬请期待" },
-        { status: 400 }
-      )
-    }
-
     const buffer = Buffer.from(await file.arrayBuffer())
 
     // 2. 解析

@@ -8,49 +8,206 @@
 
 ## 架构概述
 
-Chat 使用 **Claude Agentic Loop**：服务端与 Claude 来回循环调用，直到 Claude 返回最终文字回答，全程通过 **SSE（Server-Sent Events）** 流式推送到前端。
+Chat 升级为 **多 Session + 标准 Claude Agent SDK** 架构：
 
 ```
-前端 ChatPanel
-  │  POST /api/agent  { messages, systemPrompt }
+前端 ChatPanel（两栏布局）
+  左栏：Session 列表 + 新建对话
+  右栏：当前 Session 消息历史 + 工具调用气泡 + 输入框
+    │
+    │  Session CRUD → /api/sessions/*
+    │  发送消息     → POST /api/sessions/:id/run  （SSE 流式）
+    ▼
+
+/api/sessions/:id/run
   │
-  ▼
-/api/agent/route.ts
+  ├── 从 DB 加载 Session 历史（最近 20 轮）
+  ├── buildAgentSystemPrompt()  构建 System Prompt（每次发消息重新调用，感知新上传文件）
   │
-  ├── while (Claude 返回 tool_use) {
-  │     ├── Claude API call（非流式，工具调用阶段）
-  │     ├── 执行工具（查 DB，返回 JSON 字符串）
-  │     └── 追加 tool_result，继续循环（最多 10 次）
-  │   }
-  │
-  └── Claude API call（流式，最终回答）
-        → 逐 chunk 写入 SSE 响应
-        → 前端逐字渲染
+  └── runAgentLoop()
+        ├── SDK stream() 发起流式请求
+        │     └── on('text')  → SSE: text_delta
+        │
+        ├── stream 结束 → finalMessage.stop_reason === "tool_use"
+        │     ├── 提取 content[] 中的 tool_use 块
+        │     ├── SSE: tool_start（含 tool 名 + input）
+        │     ├── executeTool() → DB 查询 → JSON 字符串
+        │     ├── SSE: tool_done（含 resultSummary）
+        │     └── 追加 tool_result → 再次 stream()（agent loop 代码控制）
+        │
+        └── stop_reason === "end_turn"
+              ├── SSE: done（含 messageId）
+              └── 完整消息写入 DB（user + assistant + toolCalls[]）
 ```
 
 ---
 
-## 一、SSE 响应格式
+## 一、Session 管理 API
+
+```
+POST   /api/sessions              创建 Session，写入 DB，返回 { id, title, createdAt }
+GET    /api/sessions              返回所有 Session 列表（按 updatedAt 倒序）
+GET    /api/sessions/:id          返回指定 Session + 最近 20 轮消息历史
+PATCH  /api/sessions/:id          更新 Session 标题（重命名）
+DELETE /api/sessions/:id          删除 Session（及其所有消息）
+POST   /api/sessions/:id/run      执行 Agent Loop，SSE 流式响应
+```
+
+---
+
+## 二、SSE 事件规范
+
+服务端通过 SSE 向前端推送 Agent 执行过程：
+
+| type | 含义 | 额外字段 |
+|------|------|---------|
+| `session_start` | Agent 开始执行 | `sessionId` |
+| `tool_start` | 开始执行工具 | `tool: string`, `input: object` |
+| `tool_done` | 工具执行完毕 | `tool: string`, `resultSummary: string` |
+| `text_delta` | 流式文字片段 | `delta: string` |
+| `done` | 本轮回答结束 | `messageId: string` |
+| `error` | 出错 | `message: string`, `code?: string` |
+
+---
+
+## 三、Agent Loop 实现
 
 ```ts
-// /api/agent/route.ts
-export async function POST(req: Request) {
-  const { messages, systemPrompt } = await req.json()
+// lib/agentLoop.ts
 
-  const stream = new TransformStream()
-  const writer = stream.writable.getWriter()
+const MAX_ITERATIONS = 10
+
+async function runAgentLoop(
+  sessionId:    string,
+  messages:     Anthropic.MessageParam[],   // 从 DB 加载的历史
+  systemPrompt: string,
+  skillTools:   Anthropic.Tool[],           // 本 Session 挂载的 Skill 工具集
+  onEvent:      (event: object) => void
+): Promise<{ role: "assistant"; content: string; toolCalls: ToolCallRecord[] }> {
+  const client   = new Anthropic()
+  let history    = [...messages]
+  let toolCalls: ToolCallRecord[] = []
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    // 每轮使用 stream()，流式阶段只处理 text 事件
+    const stream = client.messages.stream({
+      model:      "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system:     systemPrompt,
+      tools:      skillTools,
+      messages:   history,
+    })
+
+    // 流式阶段：text_delta 实时推送
+    stream.on("text", (text) => {
+      onEvent({ type: "text_delta", delta: text })
+    })
+
+    // 等待流结束，取最终消息
+    const finalMsg = await stream.finalMessage()
+
+    // 情况1：stop_reason = tool_use（流结束后处理，非中途）
+    if (finalMsg.stop_reason === "tool_use") {
+      const toolUseBlocks = finalMsg.content.filter(b => b.type === "tool_use")
+      history.push({ role: "assistant", content: finalMsg.content })
+
+      const toolResults = await Promise.all(
+        toolUseBlocks.map(async (block) => {
+          onEvent({ type: "tool_start", tool: block.name, input: block.input })
+          const result        = await executeTool(block.name, block.input)
+          const resultSummary = buildResultSummary(block.name, result)
+          onEvent({ type: "tool_done", tool: block.name, resultSummary })
+
+          // 记录工具调用（持久化用）
+          toolCalls.push({ tool: block.name, input: block.input, result: resultSummary })
+
+          return {
+            type:        "tool_result" as const,
+            tool_use_id: block.id,
+            content:     result,
+          }
+        })
+      )
+
+      history.push({ role: "user", content: toolResults })
+      continue   // agent loop 代码驱动下一轮
+    }
+
+    // 情况2：stop_reason = end_turn（最终文字回答）
+    if (finalMsg.stop_reason === "end_turn") {
+      const textContent = finalMsg.content
+        .filter(b => b.type === "text")
+        .map(b => b.text)
+        .join("")
+      return { role: "assistant", content: textContent, toolCalls }
+    }
+  }
+
+  throw new Error(`超过最大工具调用次数（${MAX_ITERATIONS}次）`)
+}
+```
+
+---
+
+## 四、Session 执行端点
+
+```ts
+// app/api/sessions/[id]/run/route.ts
+
+export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const { userMessage } = await req.json()
+  const sessionId = params.id
+
+  const stream  = new TransformStream()
+  const writer  = stream.writable.getWriter()
   const encoder = new TextEncoder()
-
-  const send = (data: object) =>
+  const send    = (data: object) =>
     writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
 
-  // 异步执行 agentic loop
   ;(async () => {
     try {
-      const result = await runAgentLoop(messages, systemPrompt, send)
-      await send({ type: "done" })
+      send({ type: "session_start", sessionId })
+
+      // 1. 从 DB 加载历史（最近 20 轮 user+assistant 对）
+      const dbMessages = await db.message.findMany({
+        where:   { sessionId },
+        orderBy: { createdAt: "asc" },
+        take:    40,   // 20对 × 2
+      })
+      const history = buildApiMessages(dbMessages)
+
+      // 追加本轮用户消息
+      const userMsg: Anthropic.MessageParam = { role: "user", content: userMessage }
+      history.push(userMsg)
+
+      // 2. 构建 System Prompt（每次重新拉取，感知新上传文件）
+      const systemPrompt = await buildAgentSystemPrompt()
+
+      // 3. 获取本 Session 挂载的 Skill 工具集（默认 Amazon Ops Skill）
+      const skillTools = await getSessionSkillTools(sessionId)
+
+      // 4. 执行 Agent Loop
+      const result = await runAgentLoop(sessionId, history, systemPrompt, skillTools, send)
+
+      // 5. 持久化：写入 user + assistant 消息
+      const [savedUser, savedAssistant] = await Promise.all([
+        db.message.create({ data: { sessionId, role: "user",      content: userMessage } }),
+        db.message.create({ data: { sessionId, role: "assistant", content: result.content, toolCalls: result.toolCalls } }),
+      ])
+      await db.session.update({ where: { id: sessionId }, data: { updatedAt: new Date() } })
+
+      // 若是第一条消息，用消息前 30 字更新 Session 标题
+      const msgCount = await db.message.count({ where: { sessionId } })
+      if (msgCount <= 2) {
+        await db.session.update({
+          where: { id: sessionId },
+          data:  { title: userMessage.slice(0, 30) },
+        })
+      }
+
+      send({ type: "done", messageId: savedAssistant.id })
     } catch (e) {
-      await send({ type: "error", message: String(e) })
+      send({ type: "error", message: String(e) })
     } finally {
       await writer.close()
     }
@@ -66,373 +223,105 @@ export async function POST(req: Request) {
 }
 ```
 
-**SSE 事件类型**：
-
-| type | 含义 | 额外字段 |
-|------|------|---------|
-| `text_delta` | 流式文字片段 | `delta: string` |
-| `tool_start` | 开始执行工具 | `tool: string` |
-| `tool_done` | 工具执行完毕 | `tool: string` |
-| `done` | 回答结束 | — |
-| `error` | 出错 | `message: string` |
-
 ---
 
-## 二、Agentic Loop 实现
+## 五、Skill 系统
+
+Skill 是工具集的封装单元，每个 Session 挂载的工具集通过 Skill 注册表读取：
 
 ```ts
-// lib/agentLoop.ts
+// lib/skills/index.ts
 
-const MAX_ITERATIONS = 10
-
-async function runAgentLoop(
-  messages:     Anthropic.MessageParam[],
-  systemPrompt: string,
-  onEvent:      (event: object) => void
-): Promise<void> {
-  const client = new Anthropic()
-  let history  = [...messages]
-
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await client.messages.create({
-      model:      "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system:     systemPrompt,
-      tools:      TOOL_DEFINITIONS,
-      messages:   history,
-    })
-
-    // 情况1：Claude 要调用工具
-    if (response.stop_reason === "tool_use") {
-      const toolUseBlocks = response.content.filter(b => b.type === "tool_use")
-
-      // 追加 Claude 的回复到历史
-      history.push({ role: "assistant", content: response.content })
-
-      // 执行所有工具（可并行）
-      const toolResults = await Promise.all(
-        toolUseBlocks.map(async (block) => {
-          onEvent({ type: "tool_start", tool: block.name })
-          const result = await executeTool(block.name, block.input)
-          onEvent({ type: "tool_done", tool: block.name })
-          return {
-            type:        "tool_result" as const,
-            tool_use_id: block.id,
-            content:     result,
-          }
-        })
-      )
-
-      // 追加工具结果到历史
-      history.push({ role: "user", content: toolResults })
-      continue  // 继续循环
-    }
-
-    // 情况2：Claude 返回最终文字
-    if (response.stop_reason === "end_turn") {
-      // response.content 中已包含完整文字，直接提取并发送 SSE
-      // 不再发起第二次 API 调用（重复调用会产生不同内容且浪费费用）
-      for (const block of response.content) {
-        if (block.type === "text") {
-          onEvent({ type: "text_delta", delta: block.text })
-        }
-      }
-      return
-    }
-  }
-
-  throw new Error("超过最大工具调用次数（10次）")
+interface Skill {
+  id:          string
+  name:        string
+  description: string
+  tools:       Anthropic.Tool[]
+  executor:    Record<string, (input: any) => Promise<string>>
 }
-```
 
----
+// 内置 Skill：Amazon Ops（默认挂载到所有新建 Session）
+export const amazonOpsSkill: Skill = {
+  id:          "amazon-ops",
+  name:        "Amazon 运营工具集",
+  description: "查询已上传报表数据，支持 KPI、广告活动、搜索词、库存、告警等分析",
+  tools:       TOOL_DEFINITIONS,      // 复用 agentTools.ts 中的 8 个工具定义
+  executor:    { get_metrics: ..., get_search_terms: ..., /* 其余 6 个 */ },
+}
 
-## 三、工具定义（8 个）
-
-```ts
-// lib/agentTools.ts
-
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
-  {
-    name: "get_metrics",
-    description: "查询产品 KPI 快照。time_window: today/yesterday/w7/w14/d30",
-    input_schema: {
-      type: "object",
-      properties: {
-        time_window: { type: "string", enum: ["today", "yesterday", "w7", "w14", "d30"] },
-        asin:        { type: "string", description: "可选，不传则返回所有 ASIN 的聚合数据" },
-      },
-      required: ["time_window"],
-    },
-  },
-  {
-    name: "get_acos_history",
-    description: "查询某 ASIN 的 ACoS 日趋势（从 ProductMetricDay 时序表）",
-    input_schema: {
-      type: "object",
-      properties: {
-        asin: { type: "string" },
-        days: { type: "number", description: "最近 N 天，默认 30" },
-      },
-      required: ["asin"],
-    },
-  },
-  {
-    name: "get_inventory",
-    description: "查询所有 ASIN 的库存状况（可售天数、补货建议）",
-    input_schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "get_ad_campaigns",
-    description: "查询广告活动数据",
-    input_schema: {
-      type: "object",
-      properties: {
-        filter: {
-          type: "string",
-          enum: ["all", "high_acos", "over_budget", "top_spend"],
-          description: "all=全部 / high_acos=高ACOS / over_budget=超预算 / top_spend=花费最高",
-        },
-        asin: { type: "string", description: "可选，限定某个 ASIN" },
-      },
-      required: ["filter"],
-    },
-  },
-  {
-    name: "get_search_terms",
-    description: "查询搜索词转化数据",
-    input_schema: {
-      type: "object",
-      properties: {
-        filter: {
-          type: "string",
-          enum: ["all", "zero_conv", "winner", "high_acos", "high_spend"],
-          description: "zero_conv=零转化 / winner=高效词 / high_acos=高ACOS / high_spend=高花费",
-        },
-        asin: { type: "string", description: "可选" },
-      },
-      required: ["filter"],
-    },
-  },
-  {
-    name: "get_alerts",
-    description: "查询已触发的每日告警（最新一次快照）。level: red=红色危急 / yellow=黄色关注 / all=全部",
-    input_schema: {
-      type: "object",
-      properties: {
-        level: {
-          type: "string",
-          enum: ["all", "red", "yellow"],
-          description: "red=红色危急告警 / yellow=黄色关注告警 / all=全部",
-        },
-        category: { type: "string", description: "可选，按品类过滤，如 'mattress'" },
-      },
-      required: ["level"],
-    },
-  },
-  {
-    name: "list_uploaded_files",
-    description: "列出 context/ 中已上传的所有文件及其上传日期和新鲜度",
-    input_schema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "get_file_data",
-    description: "读取任意已上传文件的原始解析数据（用于不属于上方专用工具的文件类型，如 ABA 搜索词、成本管理）",
-    input_schema: {
-      type: "object",
-      properties: {
-        file_type: { type: "string", description: "fileType 枚举值" },
-        limit:     { type: "number", description: "返回行数上限，默认 50" },
-      },
-      required: ["file_type"],
-    },
-  },
-]
-```
-
----
-
-## 四、工具执行实现
-
-```ts
-// lib/agentTools.ts
-
+// 执行工具时通过 Skill executor 路由
 export async function executeTool(name: string, input: any): Promise<string> {
-  switch (name) {
+  const skill = registeredSkills.find(s => s.executor[name])
+  if (!skill) return JSON.stringify({ error: `未知工具: ${name}` })
+  return skill.executor[name](input)
+}
 
-    case "get_metrics": {
-      const days    = timeWindowToDays(input.time_window)
-      const fromDate = daysAgo(days)
-      const where   = input.asin
-        ? { asin: input.asin, date: { gte: fromDate } }
-        : { date: { gte: fromDate } }
-      const rows = await db.productMetricDay.findMany({ where })
-      return JSON.stringify(aggregateMetrics(rows))
-    }
-
-    case "get_acos_history": {
-      const days = input.days ?? 30
-      const rows = await db.productMetricDay.findMany({
-        where:   { asin: input.asin, date: { gte: daysAgo(days) } },
-        orderBy: { date: "asc" },
-      })
-      return JSON.stringify(rows.map(r => {
-        const m = r.metrics as any
-        return {
-          date:    r.date,
-          adSpend: m.ad_spend,
-          // metrics 只存原始计数，acos 在此处计算
-          acos: m.ad_sales > 0 ? m.ad_spend / m.ad_sales : null,
-        }
-      }))
-    }
-
-    case "get_inventory": {
-      const file = await db.contextFile.findUnique({ where: { fileType: "inventory" } })
-      if (!file) return JSON.stringify({ error: "库存报表未上传" })
-      return JSON.stringify(file.parsedRows)
-    }
-
-    case "get_ad_campaigns": {
-      const file = await db.contextFile.findUnique({ where: { fileType: "campaign_3m" } })
-      if (!file) return JSON.stringify({ error: "广告活动重构报表未上传" })
-      let rows = file.parsedRows as any[]
-      if (input.asin)              rows = rows.filter(r => r.asin === input.asin)
-      if (input.filter === "high_acos")   rows = rows.filter(r => r.acos > 0.6)
-      if (input.filter === "over_budget") rows = rows.filter(r => r.spend > r.daily_budget)
-      if (input.filter === "top_spend")   rows = rows.sort((a, b) => b.spend - a.spend).slice(0, 20)
-      return JSON.stringify(rows)
-    }
-
-    case "get_search_terms": {
-      const file = await db.contextFile.findUnique({ where: { fileType: "search_terms" } })
-      if (!file) return JSON.stringify({ error: "搜索词重构报表未上传" })
-      let rows = file.parsedRows as any[]
-      if (input.asin)                  rows = rows.filter(r => r.asin === input.asin)
-      if (input.filter === "zero_conv")  rows = rows.filter(r => r.ad_orders === 0 && r.clicks >= 5)
-      if (input.filter === "winner")     rows = rows.filter(r => r.acos < 0.35 && r.conversion_rate >= 0.04)
-      // ↑ conversion_rate 是广告CVR（广告订单量 ÷ 点击量），来自搜索词重构报表；
-      //   非产品报表的 OCR（页面转化率 = 订单量 ÷ Sessions），两者含义不同
-      if (input.filter === "high_acos")  rows = rows.filter(r => r.acos > 0.8)
-      if (input.filter === "high_spend") rows = rows.sort((a, b) => b.spend - a.spend).slice(0, 30)
-      return JSON.stringify(rows)
-    }
-
-    case "get_alerts": {
-      // 取最新一次的 snapshotDate，避免拉到历史过期告警
-      const latest = await db.alert.findFirst({ orderBy: { snapshotDate: "desc" } })
-      if (!latest) return JSON.stringify({ error: "暂无告警数据，请先上传产品报表" })
-
-      const where: any = { snapshotDate: latest.snapshotDate }
-      if (input.level && input.level !== "all") where.level = input.level      // "red" | "yellow"
-      if (input.category) where.categoryKey = input.category
-
-      const alerts = await db.alert.findMany({
-        where,
-        orderBy: { level: "asc" },   // "red" 字母序先于 "yellow"，危急优先展示
-        take: 100,
-      })
-      return JSON.stringify(alerts)
-    }
-
-    case "list_uploaded_files": {
-      const files = await db.contextFile.findMany({ orderBy: { uploadDate: "desc" } })
-      return JSON.stringify(
-        files.map(f => ({
-          fileType:    f.fileType,
-          fileName:    f.fileName,
-          uploadDate:  f.uploadDate,
-          snapshotDate: f.snapshotDate,
-          freshness:   getFreshness(f.fileType, f.uploadDate),
-        }))
-      )
-    }
-
-    case "get_file_data": {
-      const file = await db.contextFile.findUnique({ where: { fileType: input.file_type } })
-      if (!file) return JSON.stringify({ error: `文件类型 ${input.file_type} 未上传` })
-      const limit = input.limit ?? 50
-      const rows  = (file.parsedRows as any[]).slice(0, limit)
-      return JSON.stringify({ rows, total: (file.parsedRows as any[]).length, showing: rows.length })
-    }
-
-    default:
-      return JSON.stringify({ error: `未知工具: ${name}` })
-  }
+// 获取某 Session 挂载的所有工具定义（合并多个 Skill）
+export async function getSessionSkillTools(sessionId: string): Promise<Anthropic.Tool[]> {
+  // MVP：所有 Session 默认挂载 amazonOpsSkill
+  return amazonOpsSkill.tools
 }
 ```
 
+**8 个内置工具**（同旧版，打包进 Amazon Ops Skill）：
+
+| 工具 | 用途 |
+|------|------|
+| `get_metrics(time_window)` | 查询 KPI 快照 |
+| `get_acos_history(asin, days?)` | 查询 ACoS 日趋势 |
+| `get_inventory()` | 查询库存状况 |
+| `get_ad_campaigns(filter)` | 查询广告活动 |
+| `get_search_terms(filter)` | 查询搜索词转化 |
+| `get_alerts(level, category?)` | 查询已触发告警 |
+| `list_uploaded_files()` | 列出已上传文件 |
+| `get_file_data(file_type, limit?)` | 读取原始文件数据 |
+
+工具执行实现（`executeTool` 内部逻辑）见旧版 `04-Chat实现.md` 第四节，逻辑不变。
+
 ---
 
-## 五、System Prompt 构建
+## 六、System Prompt 构建
 
-System Prompt 在会话开始时构建一次，之后不变：
+每次用户发送消息时，服务端重新调用 `buildAgentSystemPrompt()` 构建（自动感知新上传文件）：
 
 ```ts
-// lib/buildSystemPrompt.ts
+// lib/buildSystemPrompt.ts （结构不变，内容同旧版）
 
 export async function buildAgentSystemPrompt(): Promise<string> {
-  // 1. 已上传文件列表（让 Claude 知道哪些数据可查）
-  const files = await db.contextFile.findMany()
-  const fileList = files.map(f =>
-    `- ${f.fileType}: ${f.fileName}（${f.snapshotDate}，${getFreshness(f.fileType, f.uploadDate)}）`
-  ).join("\n")
+  const files        = await db.contextFile.findMany()
+  const fileList     = files.map(f => `- ${f.fileType}: ${f.fileName}（${f.snapshotDate}）`).join("\n")
+  const toolRules    = buildToolRulesText()    // 工具强制映射规则
+  const benchmarks   = buildBenchmarkText()    // 各品类 KPI 阈值
+  const sopSummary   = SOP_SUMMARY_TEXT        // SOP P0–P3 规则摘要
 
-  // 2. 工具使用规则（强制映射）
-  const toolRules = `
-## 工具使用规则（必须遵守）
-- 产品报表相关问题 → get_metrics 或 get_acos_history（禁止用 get_file_data）
-- 广告活动数据 → get_ad_campaigns
-- 搜索词数据 → get_search_terms
-- 库存数据 → get_inventory
-- 其他文件类型 → get_file_data(file_type)
-`
-
-  // 3. KPI 健康基准（从 config 读取）
-  const benchmarks = buildBenchmarkText()  // 按品类输出阈值表
-
-  // 4. 广告 SOP 规则摘要
-  const sopSummary = SOP_SUMMARY_TEXT  // 静态常量，从 07-配置参数.md 提取
-
-  return `
-你是 YZ-Ops AI，亚马逊运营数据分析助手。基于以下已上传数据回答问题。
-
-## 已上传文件
-${fileList}
-
-${toolRules}
-
-## KPI 健康基准
-${benchmarks}
-
-## 广告优化 SOP（P0–P3 规则摘要）
-${sopSummary}
-
-## 边界限制
-- 只基于已上传数据分析，不做销量预测
-- 不直接执行广告后台操作
-- 若数据不存在，明确告知缺少哪份报表
-`.trim()
+  return `你是 YZ-Ops AI，亚马逊运营数据分析助手。\n\n## 已上传文件\n${fileList}\n\n${toolRules}\n\n## KPI 健康基准\n${benchmarks}\n\n## 广告优化 SOP\n${sopSummary}\n\n## 边界限制\n- 只基于已上传数据分析，不做销量预测\n- 不直接执行广告后台操作\n- 若数据不存在，明确告知缺少哪份报表`.trim()
 }
 ```
 
 ---
 
-## 六、前端 ChatPanel 核心逻辑
+## 七、前端 ChatPanel 核心逻辑
 
 ```ts
 // components/panels/ChatPanel.tsx（核心片段）
 
+// 切换 Session：从 DB 加载历史
+async function selectSession(sessionId: string) {
+  setActiveSessionId(sessionId)
+  const data = await fetch(`/api/sessions/${sessionId}`).then(r => r.json())
+  setMessages(data.messages)   // [{ role, content, toolCalls[] }]
+}
+
+// 发送消息
 async function sendMessage(userText: string) {
-  const userMsg = { role: "user", content: userText }
-  setMessages(prev => [...prev, userMsg, { role: "assistant", content: "" }])
+  const tempUserMsg = { role: "user", content: userText }
+  setMessages(prev => [...prev, tempUserMsg])
+  setStreaming(true)
 
-  const systemPrompt = await fetch("/api/build-prompt").then(r => r.text())
-
-  const response = await fetch("/api/agent", {
+  const response = await fetch(`/api/sessions/${activeSessionId}/run`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ messages: [...messages, userMsg], systemPrompt }),
+    body:    JSON.stringify({ userMessage: userText }),
   })
 
   const reader  = response.body!.getReader()
@@ -442,24 +331,33 @@ async function sendMessage(userText: string) {
     const { done, value } = await reader.read()
     if (done) break
 
-    const lines = decoder.decode(value).split("\n")
-    for (const line of lines) {
+    for (const line of decoder.decode(value).split("\n")) {
       if (!line.startsWith("data: ")) continue
       const event = JSON.parse(line.slice(6))
 
       if (event.type === "text_delta") {
-        // 追加到最后一条消息
-        setMessages(prev => {
-          const last = { ...prev[prev.length - 1] }
-          last.content += event.delta
-          return [...prev.slice(0, -1), last]
-        })
+        // 追加流式文字到正在渲染的气泡
+        setStreamingText(prev => prev + event.delta)
       }
       if (event.type === "tool_start") {
-        setActiveTools(prev => [...prev, event.tool])  // 显示工具执行状态
+        // 添加 loading 状态的工具调用气泡
+        setToolBubbles(prev => [...prev, { tool: event.tool, input: event.input, status: "loading" }])
+      }
+      if (event.type === "tool_done") {
+        // 更新对应气泡为 done 状态
+        setToolBubbles(prev => prev.map(b =>
+          b.tool === event.tool && b.status === "loading"
+            ? { ...b, status: "done", resultSummary: event.resultSummary }
+            : b
+        ))
       }
       if (event.type === "done") {
-        setActiveTools([])
+        // 将流式文字固化为消息，刷新 Session 列表
+        setMessages(prev => [...prev, { role: "assistant", content: streamingText }])
+        setStreamingText("")
+        setToolBubbles([])
+        setStreaming(false)
+        refreshSessions()   // 更新 Session updatedAt / 标题
       }
     }
   }
@@ -468,26 +366,26 @@ async function sendMessage(userText: string) {
 
 ---
 
-## 七、对话历史策略
-
-这里涉及两套"历史"概念，需明确区分：
+## 八、消息历史策略
 
 ```
-前端 messages（用户可见的对话记录）
-  └── [{ role:"user", content:"string" }, { role:"assistant", content:"string" }, ...]
-  └── 只含纯文字消息对；tool_use/tool_result 轮次不写入此数组
-  └── 每轮 POST /api/agent 时，把此数组作为 messages 参数发给服务端
+DB 存储
+  Session 表    id / title / createdAt / updatedAt
+  Message 表    id / sessionId / role / content / toolCalls[] / createdAt
 
-服务端 history（agentLoop 内部的 Anthropic API 消息数组，单次请求生命周期）
-  └── 从前端 messages 复制初始化，格式相同
-  └── 工具调用循环中会追加 tool_use、tool_result 块（Claude API 要求）
-  └── POST /api/agent 响应结束后即丢弃，不返回给前端，不持久化
+加载规则
+  GET /api/sessions/:id → 取最近 40 条（= 最近 20 轮 user+assistant 对）
+  超长 Session：历史自动截断，保留 System Prompt + 最近 20 轮（防 context 超限）
+
+工具调用记录
+  toolCalls[] 存摘要（tool 名 + input + resultSummary），不存完整 JSON 返回
+  用于 UI 展示工具调用历史，不用于重建 API 消息数组
 ```
 
 | 项目 | 策略 | 原因 |
 |------|------|------|
-| 前端消息历史 | 仅保留 user/assistant 文字轮次 | 工具调用细节对用户不可见，减少 context 增长 |
-| 服务端内部历史 | 单次请求内完整保留所有块（含 tool_use/tool_result） | Anthropic API 多轮工具调用格式要求 |
-| 跨轮数据 | Claude 每轮重新调工具获取最新数据 | 数据可能因上传新报表而变化 |
-| 持久化 | MVP 不持久化，刷新页面历史清空 | 简化复杂度 |
-| 最大轮次 | 10 次工具调用循环上限 | 防止死循环 |
+| 前端消息历史 | 切换 Session 时从 DB 加载，无需重建 | 多 Session 切换需要真实持久化 |
+| 服务端 history | 每轮请求从 DB 拉取 + 本轮消息，循环内追加 tool_use/tool_result | Anthropic API 多轮工具调用格式要求 |
+| 跨轮数据 | Claude 每轮重新调工具获取最新数据 | 数据可能因新报表上传而变化 |
+| 持久化 | user + assistant 消息在 `done` 事件后写入 DB | 刷新页面后可继续对话 |
+| 最大轮次 | agent loop 代码控制 max_iterations = 10 | 防止死循环；SDK 本身无此参数 |

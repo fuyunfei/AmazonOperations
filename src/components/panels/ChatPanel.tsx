@@ -2,11 +2,10 @@
 
 import { useState, useRef, useEffect, useCallback } from "react"
 import {
-  Sparkles, Paperclip, Send, Copy,
-  ThumbsUp, ThumbsDown, RefreshCw, Check, Wrench,
+  Sparkles, Plus, Send, Copy, Check, Wrench,
+  MessageSquare, Trash2, Pencil, X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAppStore } from "@/store/appStore"
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 
@@ -128,176 +127,227 @@ const QUICK_PROMPTS = [
   { icon: "📈", label: "销售趋势分析",   text: "请分析最近7天的销售趋势，包括GMV、订单量、Sessions的日环比变化。" },
 ] as const
 
-// ── Message type ───────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface SessionMeta {
+  id:        string
+  title:     string
+  createdAt: string
+  updatedAt: string
+}
 
 interface ChatMessage {
   id:        string
   role:      "user" | "assistant"
   content:   string
-  tools?:    string[]   // 此轮调用的工具名列表
+  toolCalls?: Array<{ tool: string; input: object; resultSummary: string }>
+}
+
+interface ToolBubble {
+  tool:           string
+  input:          object
+  status:         "loading" | "done"
+  resultSummary?: string
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function ChatPanel() {
-  const { selectedModel } = useAppStore()
-  const [messages, setMessages]       = useState<ChatMessage[]>([])
-  const [input, setInput]             = useState("")
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [activeTools, setActiveTools] = useState<string[]>([])
-  const [likedIds, setLikedIds]       = useState<Set<string>>(new Set())
-  const [dislikedIds, setDislikedIds] = useState<Set<string>>(new Set())
-  const [copiedId, setCopiedId]       = useState<string | null>(null)
+  const [sessions, setSessions]               = useState<SessionMeta[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [messages, setMessages]               = useState<ChatMessage[]>([])
+  const [streamingText, setStreamingText]     = useState("")
+  const [toolBubbles, setToolBubbles]         = useState<ToolBubble[]>([])
+  const [isStreaming, setIsStreaming]         = useState(false)
+  const [input, setInput]                     = useState("")
+  const [copiedId, setCopiedId]               = useState<string | null>(null)
+  const [renamingId, setRenamingId]           = useState<string | null>(null)
+  const [renameValue, setRenameValue]         = useState("")
 
-  const messagesEndRef       = useRef<HTMLDivElement>(null)
-  const textareaRef          = useRef<HTMLTextAreaElement>(null)
-  const abortControllerRef   = useRef<AbortController | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const textareaRef    = useRef<HTMLTextAreaElement>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages])
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [messages, streamingText])
 
-  useEffect(() => () => { abortControllerRef.current?.abort() }, [])
+  // ── Session 管理 ───────────────────────────────────────────────────────────
 
-  const doSend = useCallback(async (userText: string) => {
-    if (!userText.trim() || isStreaming) return
+  const loadSessions = useCallback(async () => {
+    const data = await fetch("/api/sessions").then(r => r.json()) as SessionMeta[]
+    setSessions(data)
+    // 若没有激活 Session 且有列表，自动选第一个
+    if (!activeSessionId && data.length > 0) {
+      await selectSession(data[0].id, false)
+    }
+  }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: userText }
-    const asstMsg: ChatMessage = { id: `a-${Date.now()}`, role: "assistant", content: "", tools: [] }
+  useEffect(() => { loadSessions() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-    setMessages(prev => [...prev, userMsg, asstMsg])
+  const selectSession = useCallback(async (sessionId: string, refresh = true) => {
+    setActiveSessionId(sessionId)
+    setStreamingText("")
+    setToolBubbles([])
+    const data = await fetch(`/api/sessions/${sessionId}`).then(r => r.json()) as { messages: ChatMessage[] }
+    setMessages(data.messages ?? [])
+    if (refresh) loadSessions()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const createSession = useCallback(async () => {
+    const session = await fetch("/api/sessions", { method: "POST" }).then(r => r.json()) as SessionMeta
+    setSessions(prev => [session, ...prev])
+    setActiveSessionId(session.id)
+    setMessages([])
+    setStreamingText("")
+    setToolBubbles([])
+  }, [])
+
+  const deleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" })
+    setSessions(prev => prev.filter(s => s.id !== sessionId))
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(null)
+      setMessages([])
+    }
+  }, [activeSessionId])
+
+  const startRename = (session: SessionMeta, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setRenamingId(session.id)
+    setRenameValue(session.title)
+    setTimeout(() => renameInputRef.current?.focus(), 50)
+  }
+
+  const commitRename = useCallback(async () => {
+    if (!renamingId || !renameValue.trim()) { setRenamingId(null); return }
+    await fetch(`/api/sessions/${renamingId}`, {
+      method:  "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ title: renameValue.trim() }),
+    })
+    setSessions(prev => prev.map(s => s.id === renamingId ? { ...s, title: renameValue.trim() } : s))
+    setRenamingId(null)
+  }, [renamingId, renameValue])
+
+  // ── 发送消息 ───────────────────────────────────────────────────────────────
+
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || isStreaming || !activeSessionId) return
+
+    setMessages(prev => [...prev, { id: `tmp-u-${Date.now()}`, role: "user", content: text }])
+    setStreamingText("")
+    setToolBubbles([])
     setIsStreaming(true)
-    setActiveTools([])
+
+    // 本地变量累积流式文字和工具气泡，避免 stale closure 读取 React state
+    let localText    = ""
+    let localBubbles: ToolBubble[] = []
+
+    const finish = () => {
+      setStreamingText("")
+      setToolBubbles([])
+      setIsStreaming(false)
+    }
 
     try {
-      // 每次发消息重新获取最新 system prompt（包含最新文件状态）
-      const systemPrompt = await fetch("/api/build-prompt").then(r => r.text())
-
-      // 构建 Anthropic 消息历史（仅 user/assistant 文字轮次，不含 tool_use/tool_result）
-      const history = messages
-        .filter(m => m.content !== "")
-        .map(m => ({ role: m.role, content: m.content }))
-      history.push({ role: "user" as const, content: userText })
-
-      const controller = new AbortController()
-      abortControllerRef.current = controller
-
-      const response = await fetch("/api/agent", {
+      const response = await fetch(`/api/sessions/${activeSessionId}/run`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        signal:  controller.signal,
-        body:    JSON.stringify({ messages: history, systemPrompt, model: selectedModel }),
+        body:    JSON.stringify({ userMessage: text }),
       })
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: "请求失败" })) as { error?: string }
-        setMessages(prev => {
-          const next = [...prev]
-          next[next.length - 1] = { ...next[next.length - 1], content: `❌ 错误：${err.error ?? "请求失败"}` }
-          return next
-        })
-        return
-      }
 
       const reader  = response.body!.getReader()
       const decoder = new TextDecoder()
-      const calledTools: string[] = []
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
-        const lines = decoder.decode(value, { stream: true }).split("\n")
-        for (const line of lines) {
+        for (const line of decoder.decode(value, { stream: true }).split("\n")) {
           if (!line.startsWith("data: ")) continue
           try {
             const event = JSON.parse(line.slice(6)) as {
-              type:     string
-              delta?:   string
-              tool?:    string
-              message?: string
+              type:           string
+              delta?:         string
+              tool?:          string
+              input?:         object
+              resultSummary?: string
+              messageId?:     string
+              message?:       string
             }
 
             if (event.type === "text_delta" && event.delta) {
-              setMessages(prev => {
-                const next = [...prev]
-                const last = { ...next[next.length - 1] }
-                last.content += event.delta!
-                next[next.length - 1] = last
-                return next
-              })
+              localText += event.delta
+              setStreamingText(prev => prev + event.delta!)
             }
 
             if (event.type === "tool_start" && event.tool) {
-              calledTools.push(event.tool)
-              setActiveTools([...calledTools])
+              const bubble: ToolBubble = { tool: event.tool!, input: event.input ?? {}, status: "loading" }
+              localBubbles = [...localBubbles, bubble]
+              setToolBubbles([...localBubbles])
             }
 
-            if (event.type === "tool_done") {
-              // keep showing tools until done
+            if (event.type === "tool_done" && event.tool) {
+              localBubbles = localBubbles.map(b =>
+                b.tool === event.tool && b.status === "loading"
+                  ? { ...b, status: "done" as const, resultSummary: event.resultSummary }
+                  : b
+              )
+              setToolBubbles([...localBubbles])
             }
 
             if (event.type === "done") {
-              setActiveTools([])
-              // record which tools were used for this message
-              if (calledTools.length > 0) {
-                setMessages(prev => {
-                  const next = [...prev]
-                  next[next.length - 1] = { ...next[next.length - 1], tools: [...calledTools] }
-                  return next
-                })
-              }
+              setMessages(prev => [
+                ...prev,
+                {
+                  id:        event.messageId ?? `tmp-a-${Date.now()}`,
+                  role:      "assistant" as const,
+                  content:   localText,
+                  toolCalls: localBubbles.map(b => ({ tool: b.tool, input: b.input, resultSummary: b.resultSummary ?? "" })),
+                },
+              ])
+              finish()
+              loadSessions()
             }
 
             if (event.type === "error") {
-              setMessages(prev => {
-                const next = [...prev]
-                next[next.length - 1] = { ...next[next.length - 1], content: `❌ ${event.message ?? "未知错误"}` }
-                return next
-              })
+              setMessages(prev => [...prev, {
+                id:      `tmp-err-${Date.now()}`,
+                role:    "assistant" as const,
+                content: `错误：${event.message ?? "未知错误"}`,
+              }])
+              finish()
             }
-          } catch { /* skip malformed events */ }
+          } catch { /* skip malformed lines */ }
         }
       }
     } catch (err) {
-      if ((err as Error).name === "AbortError") {
-        // 用户中断，移除空的 assistant placeholder
-        setMessages(prev => prev.filter(m => !(m.role === "assistant" && m.content === "")))
-        return
-      }
-      setMessages(prev => {
-        const next = [...prev]
-        next[next.length - 1] = { ...next[next.length - 1], content: "❌ 网络错误，请稍后重试。" }
-        return next
-      })
-    } finally {
-      setIsStreaming(false)
-      setActiveTools([])
+      setMessages(prev => [...prev, {
+        id:      `tmp-err-${Date.now()}`,
+        role:    "assistant" as const,
+        content: `网络错误：${String(err)}`,
+      }])
+      finish()
     }
-  }, [isStreaming, messages])
+  }, [isStreaming, activeSessionId, loadSessions])
 
   const handleSend = useCallback(async (text?: string) => {
-    const msgText = (text ?? input).trim()
-    if (!msgText) return
+    const msg = (text ?? input).trim()
+    if (!msg) return
     setInput("")
     if (textareaRef.current) textareaRef.current.style.height = "auto"
-    await doSend(msgText)
-  }, [input, doSend])
 
-  const handleRegenerate = useCallback(async () => {
-    if (isStreaming || messages.length === 0) return
-    const last = messages[messages.length - 1]
-    if (last.role !== "assistant") return
-    const lastUser = [...messages].reverse().find(m => m.role === "user")
-    if (!lastUser) return
-    setMessages(prev => prev.slice(0, -1))  // remove last assistant message
-    await doSend(lastUser.content)
-  }, [isStreaming, messages, doSend])
+    // 若没有 Session，先创建一个
+    let sessionId = activeSessionId
+    if (!sessionId) {
+      const session = await fetch("/api/sessions", { method: "POST" }).then(r => r.json()) as SessionMeta
+      setSessions(prev => [session, ...prev])
+      setActiveSessionId(session.id)
+      sessionId = session.id
+    }
 
-  const handleCopy = (id: string, content: string) => {
-    navigator.clipboard.writeText(content).then(() => {
-      setCopiedId(id)
-      setTimeout(() => setCopiedId(null), 1500)
-    })
-  }
+    await sendMessage(msg)
+  }, [input, activeSessionId, sendMessage])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend() }
@@ -309,140 +359,223 @@ export default function ChatPanel() {
     e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
   }
 
-  const isTyping = isStreaming && messages.length > 0 &&
-    messages[messages.length - 1].role === "assistant" &&
-    messages[messages.length - 1].content === ""
+  const handleCopy = (id: string, content: string) => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopiedId(id)
+      setTimeout(() => setCopiedId(null), 1500)
+    })
+  }
+
+  const isTyping = isStreaming && streamingText === "" && toolBubbles.length === 0
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-full" style={{ background: "#fafaf9" }}>
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#d4d4d4 transparent" }}>
-        <div className="mx-auto" style={{ maxWidth: 720, padding: "24px 20px 8px" }}>
+    <div className="flex h-full" style={{ background: "#fafaf9" }}>
 
-          {/* Welcome state */}
-          {messages.length === 0 && !isStreaming && (
-            <div>
-              <div className="text-center mb-8">
-                <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl mb-3" style={{ background: "#1a1a1a" }}>
-                  <Sparkles size={18} color="white" />
-                </div>
-                <p className="text-sm font-medium" style={{ color: "#1a1a1a" }}>YZ-Ops AI</p>
-                <p className="text-xs mt-1" style={{ color: "#a3a3a3" }}>跨品类运营数据分析 · 已上传文件均可查询</p>
-              </div>
-              <div className="flex flex-wrap gap-2 justify-center">
-                {QUICK_PROMPTS.map(prompt => (
-                  <button key={prompt.label} onClick={() => handleSend(prompt.text)}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs transition-all hover:bg-[#eae8e4] hover:scale-[1.02]"
-                    style={{ background: "#f0eeec", color: "#374151", border: "1px solid #e8e5e0" }}>
-                    <span>{prompt.icon}</span><span>{prompt.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+      {/* ── 左栏：Session 列表 ─────────────────────────────────────────────── */}
+      <div className="flex flex-col flex-shrink-0 border-r" style={{ width: 220, borderColor: "#e8e5e0", background: "#f5f4f2" }}>
+        {/* New chat button */}
+        <div className="p-3 border-b" style={{ borderColor: "#e8e5e0" }}>
+          <button onClick={createSession}
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-[#eae8e4]"
+            style={{ color: "#1a1a1a", border: "1px solid #e8e5e0", background: "#ffffff" }}>
+            <Plus size={14} />
+            新对话
+          </button>
+        </div>
+
+        {/* Session list */}
+        <div className="flex-1 overflow-y-auto py-2" style={{ scrollbarWidth: "thin", scrollbarColor: "#d4d4d4 transparent" }}>
+          {sessions.length === 0 && (
+            <p className="px-3 py-6 text-center text-xs" style={{ color: "#a3a3a3" }}>
+              暂无对话<br />点击「新对话」开始
+            </p>
           )}
+          {sessions.map(session => (
+            <div key={session.id}
+              className={cn("group flex items-center gap-2 px-3 py-2 mx-1.5 mb-0.5 rounded-lg cursor-pointer transition-colors",
+                activeSessionId === session.id ? "bg-white" : "hover:bg-[#eae8e4]")}
+              style={{ boxShadow: activeSessionId === session.id ? "0 1px 3px rgba(0,0,0,0.06)" : "none" }}
+              onClick={() => selectSession(session.id)}>
 
-          {/* Message list */}
-          <div className="flex flex-col gap-4">
-            {messages.map((msg, idx) => {
-              const isLast    = idx === messages.length - 1
-              const showTyping = isTyping && isLast && msg.role === "assistant"
+              <MessageSquare size={13} style={{ color: "#a3a3a3", flexShrink: 0 }} />
 
-              if (msg.role === "user") {
+              {renamingId === session.id ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={e => setRenameValue(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setRenamingId(null) }}
+                  onClick={e => e.stopPropagation()}
+                  className="flex-1 text-xs bg-transparent outline-none border-b"
+                  style={{ color: "#1a1a1a", borderColor: "#1a1a1a", minWidth: 0 }}
+                />
+              ) : (
+                <span className="flex-1 text-xs truncate" style={{ color: "#374151" }}>
+                  {session.title}
+                </span>
+              )}
+
+              {renamingId !== session.id && (
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button title="重命名" onClick={e => startRename(session, e)}
+                    className="p-0.5 rounded hover:bg-[#e0deda]" style={{ color: "#9ca3af" }}>
+                    <Pencil size={11} />
+                  </button>
+                  <button title="删除" onClick={e => deleteSession(session.id, e)}
+                    className="p-0.5 rounded hover:bg-[#fee2e2]" style={{ color: "#9ca3af" }}>
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 右栏：对话区 ────────────────────────────────────────────────────── */}
+      <div className="flex flex-col flex-1 min-w-0">
+
+        {/* Messages area */}
+        <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin", scrollbarColor: "#d4d4d4 transparent" }}>
+          <div className="mx-auto" style={{ maxWidth: 720, padding: "24px 20px 8px" }}>
+
+            {/* Welcome state */}
+            {messages.length === 0 && !isStreaming && (
+              <div>
+                <div className="text-center mb-8">
+                  <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl mb-3" style={{ background: "#1a1a1a" }}>
+                    <Sparkles size={18} color="white" />
+                  </div>
+                  <p className="text-sm font-medium" style={{ color: "#1a1a1a" }}>YZ-Ops AI</p>
+                  <p className="text-xs mt-1" style={{ color: "#a3a3a3" }}>跨品类运营数据分析 · 已上传文件均可查询</p>
+                </div>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {QUICK_PROMPTS.map(prompt => (
+                    <button key={prompt.label} onClick={() => handleSend(prompt.text)}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-full text-xs transition-all hover:bg-[#eae8e4] hover:scale-[1.02]"
+                      style={{ background: "#f0eeec", color: "#374151", border: "1px solid #e8e5e0" }}>
+                      <span>{prompt.icon}</span><span>{prompt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Message list */}
+            <div className="flex flex-col gap-4">
+              {messages.map(msg => {
+                if (msg.role === "user") {
+                  return (
+                    <div key={msg.id} className="flex justify-end">
+                      <div className="rounded-2xl rounded-tr-sm px-4 py-3 text-sm"
+                        style={{ background: "#1a1a1a", color: "#fff", maxWidth: "80%", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                        {msg.content}
+                      </div>
+                    </div>
+                  )
+                }
+
                 return (
-                  <div key={msg.id} className="flex justify-end">
-                    <div className="rounded-2xl rounded-tr-sm px-4 py-3 text-sm"
-                      style={{ background: "#1a1a1a", color: "#fff", maxWidth: "80%", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                      {msg.content}
+                  <div key={msg.id} className="flex gap-3">
+                    <div className="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg mt-0.5" style={{ background: "#1a1a1a" }}>
+                      <Sparkles size={13} color="white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      {/* Tool call history (from DB) */}
+                      {msg.toolCalls && msg.toolCalls.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {msg.toolCalls.map((tc, idx) => (
+                            <span key={idx} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px]"
+                              style={{ background: "#f0eeec", color: "#6b7280" }}>
+                              <Wrench size={9} />{tc.tool}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="rounded-2xl rounded-tl-sm px-4 py-3" style={{ background: "#f5f4f2" }}>
+                        <MarkdownContent content={msg.content} />
+                      </div>
+                      {/* Copy button */}
+                      {msg.content && (
+                        <button title="复制" onClick={() => handleCopy(msg.id, msg.content)}
+                          className="mt-1 p-1 rounded transition-colors hover:bg-[#eae8e4]"
+                          style={{ color: copiedId === msg.id ? "#1a1a1a" : "#a3a3a3" }}>
+                          {copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}
+                        </button>
+                      )}
                     </div>
                   </div>
                 )
-              }
+              })}
 
-              return (
-                <div key={msg.id} className="flex gap-3">
+              {/* Streaming assistant message */}
+              {isStreaming && (
+                <div className="flex gap-3">
                   <div className="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg mt-0.5" style={{ background: "#1a1a1a" }}>
                     <Sparkles size={13} color="white" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    {/* Tool activity indicator (during streaming) */}
-                    {isLast && isStreaming && activeTools.length > 0 && (
-                      <div className="flex items-center gap-1.5 mb-2 text-xs" style={{ color: "#a3a3a3" }}>
-                        <Wrench size={11} />
-                        <span>查询中：{activeTools[activeTools.length - 1]}</span>
-                      </div>
-                    )}
-                    <div className="rounded-2xl rounded-tl-sm px-4 py-3" style={{ background: "#f5f4f2" }}>
-                      {showTyping ? <TypingDots /> : <MarkdownContent content={msg.content} />}
-                    </div>
-
-                    {/* Tools used (shown after response) */}
-                    {!showTyping && msg.content && msg.tools && msg.tools.length > 0 && (
-                      <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                        {msg.tools.map(tool => (
-                          <span key={tool} className="flex items-center gap-0.5 px-2 py-0.5 rounded text-[10px]"
-                            style={{ background: "#f0eeec", color: "#6b7280" }}>
-                            <Wrench size={9} />{tool}
-                          </span>
+                    {/* Active tool bubbles */}
+                    {toolBubbles.length > 0 && (
+                      <div className="flex flex-col gap-1 mb-2">
+                        {toolBubbles.map((bubble, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+                            style={{ background: "#f0eeec", color: "#6b7280", width: "fit-content" }}>
+                            <Wrench size={10} />
+                            <span>{bubble.tool}</span>
+                            {bubble.status === "loading" ? (
+                              <span style={{ color: "#a3a3a3" }}>…</span>
+                            ) : (
+                              <>
+                                <Check size={10} style={{ color: "#16a34a" }} />
+                                {bubble.resultSummary && (
+                                  <span style={{ color: "#9ca3af" }}>{bubble.resultSummary}</span>
+                                )}
+                              </>
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}
-
-                    {/* Action buttons */}
-                    {!showTyping && msg.content && (
-                      <div className={cn("flex items-center gap-0.5 mt-1", isStreaming && isLast ? "opacity-0" : "opacity-100")}>
-                        <button title="复制" onClick={() => handleCopy(msg.id, msg.content)}
-                          className="p-1 rounded transition-colors hover:bg-[#eae8e4]" style={{ color: copiedId === msg.id ? "#1a1a1a" : "#a3a3a3" }}>
-                          {copiedId === msg.id ? <Check size={13} /> : <Copy size={13} />}
-                        </button>
-                        <button title="有帮助" onClick={() => setLikedIds(prev => { const n = new Set(prev); n.has(msg.id) ? n.delete(msg.id) : n.add(msg.id); return n })}
-                          className="p-1 rounded transition-colors hover:bg-[#eae8e4]" style={{ color: likedIds.has(msg.id) ? "#1a1a1a" : "#a3a3a3" }}>
-                          <ThumbsUp size={13} />
-                        </button>
-                        <button title="没帮助" onClick={() => setDislikedIds(prev => { const n = new Set(prev); n.has(msg.id) ? n.delete(msg.id) : n.add(msg.id); return n })}
-                          className="p-1 rounded transition-colors hover:bg-[#eae8e4]" style={{ color: dislikedIds.has(msg.id) ? "#1a1a1a" : "#a3a3a3" }}>
-                          <ThumbsDown size={13} />
-                        </button>
-                        {isLast && (
-                          <button title="重新生成" onClick={handleRegenerate}
-                            className="p-1 rounded transition-colors hover:bg-[#eae8e4]" style={{ color: "#a3a3a3" }}>
-                            <RefreshCw size={13} />
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    <div className="rounded-2xl rounded-tl-sm px-4 py-3" style={{ background: "#f5f4f2" }}>
+                      {isTyping
+                        ? <TypingDots />
+                        : <MarkdownContent content={streamingText} />
+                      }
+                    </div>
                   </div>
                 </div>
-              )
-            })}
-          </div>
-          <div ref={messagesEndRef} style={{ height: 8 }} />
-        </div>
-      </div>
+              )}
+            </div>
 
-      {/* Input area */}
-      <div className="flex-shrink-0 px-4 pb-4 pt-2" style={{ background: "#fafaf9" }}>
-        <div className="mx-auto" style={{ maxWidth: 720 }}>
-          <div className="flex items-end gap-2 rounded-2xl px-3 py-2.5"
-            style={{ background: "#ffffff", border: "1px solid #e8e5e0", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-            <button className="flex-shrink-0 p-1.5 rounded-lg transition-colors hover:bg-[#f0eeec]"
-              style={{ color: "#a3a3a3" }} title="上传文件（使用右侧 Context 面板上传报表）">
-              <Paperclip size={15} />
-            </button>
-            <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
-              placeholder="请提问，如：诊断本周广告效率，或：哪个 ASIN 库存最紧张？"
-              rows={1} disabled={isStreaming}
-              className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed"
-              style={{ color: "#1a1a1a", minHeight: 22, maxHeight: 120, scrollbarWidth: "none" }} />
-            <button onClick={() => handleSend()} disabled={!input.trim() || isStreaming}
-              className="flex-shrink-0 p-1.5 rounded-lg transition-all"
-              style={{ background: input.trim() && !isStreaming ? "#1a1a1a" : "#e8e5e0", color: input.trim() && !isStreaming ? "#fff" : "#a3a3a3" }}
-              title="发送 (Enter)">
-              <Send size={14} />
-            </button>
+            <div ref={messagesEndRef} style={{ height: 8 }} />
           </div>
-          <p className="text-center mt-2 text-[11px]" style={{ color: "#c4c4c4" }}>
-            AI 建议基于已上传报表数据生成，仅供参考
-          </p>
+        </div>
+
+        {/* Input area */}
+        <div className="flex-shrink-0 px-4 pb-4 pt-2" style={{ background: "#fafaf9" }}>
+          <div className="mx-auto" style={{ maxWidth: 720 }}>
+            <div className="flex items-end gap-2 rounded-2xl px-3 py-2.5"
+              style={{ background: "#ffffff", border: "1px solid #e8e5e0", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+              <textarea ref={textareaRef} value={input} onChange={handleInputChange} onKeyDown={handleKeyDown}
+                placeholder="请提问，如：诊断本周广告效率，或：哪个 ASIN 库存最紧张？"
+                rows={1} disabled={isStreaming}
+                className="flex-1 resize-none bg-transparent outline-none text-sm leading-relaxed"
+                style={{ color: "#1a1a1a", minHeight: 22, maxHeight: 120, scrollbarWidth: "none" }} />
+              <button onClick={() => handleSend()} disabled={!input.trim() || isStreaming}
+                className="flex-shrink-0 p-1.5 rounded-lg transition-all"
+                style={{ background: input.trim() && !isStreaming ? "#1a1a1a" : "#e8e5e0", color: input.trim() && !isStreaming ? "#fff" : "#a3a3a3" }}
+                title="发送 (Enter)">
+                <Send size={14} />
+              </button>
+            </div>
+            <p className="text-center mt-2 text-[11px]" style={{ color: "#c4c4c4" }}>
+              AI 建议基于已上传报表数据生成，仅供参考
+            </p>
+          </div>
         </div>
       </div>
     </div>

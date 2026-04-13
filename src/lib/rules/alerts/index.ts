@@ -17,6 +17,7 @@ import type { AlertCandidate, DayMetrics, CampaignBudget } from "./types"
 import { checkSalesDrop }        from "./sales"
 import { checkAcos, checkCtr, checkOcr, checkReturnRate, checkBudgetUtilization } from "./ads"
 import { checkInventoryDays }    from "./inventory"
+import { checkRating }           from "./reviews"
 
 // 触发告警引擎的文件类型
 const ALERT_DEPS: FileType[] = ["product", "keyword_monitor", "inventory", "us_campaign_30d"]
@@ -41,7 +42,7 @@ export async function runAndPersistAlerts(fileType: FileType): Promise<void> {
   const asins = asinConfigs.map(c => c.asin)
 
   // 并行拉取所需数据
-  const [metricsRows, inventoryFile, campaignFile] = await Promise.all([
+  const [metricsRows, inventoryFile, campaignFile, keywordFile] = await Promise.all([
     // 近 7 天 ProductMetricDay（全量，按 asin 分组在内存中处理）
     db.productMetricDay.findMany({
       where: {
@@ -54,6 +55,8 @@ export async function runAndPersistAlerts(fileType: FileType): Promise<void> {
     db.contextFile.findUnique({ where: { fileType: "inventory" } }),
     // US 广告活动（用于预算利用率）
     db.contextFile.findUnique({ where: { fileType: "us_campaign_30d" } }),
+    // 关键词监控（用于评分告警）
+    db.contextFile.findUnique({ where: { fileType: "keyword_monitor" } }),
   ])
 
   // 按 ASIN 分组 metrics
@@ -78,6 +81,21 @@ export async function runAndPersistAlerts(fileType: FileType): Promise<void> {
       const qty = r.availableQty ?? r.available_qty ?? 0
       // 同一 ASIN 可能有多个 SKU，合计
       inventoryMap.set(r.asin, (inventoryMap.get(r.asin) ?? 0) + qty)
+    }
+  }
+
+  // 解析关键词监控评分：取每个 ASIN 最新（最高出现）的评分
+  const ratingByAsin = new Map<string, number>()   // asin → rating
+  if (keywordFile) {
+    const kwRows = JSON.parse(keywordFile.parsedRows) as Array<{
+      asin?: string
+      rating?: number
+    }>
+    for (const r of kwRows) {
+      if (!r.asin || !r.rating) continue
+      // 同一 ASIN 可能出现多行（不同关键词），取评分最大值（避免异常低值覆盖）
+      const existing = ratingByAsin.get(r.asin) ?? 0
+      if (r.rating > existing) ratingByAsin.set(r.asin, r.rating)
     }
   }
 
@@ -147,6 +165,13 @@ export async function runAndPersistAlerts(fileType: FileType): Promise<void> {
     if (availableQty !== undefined) {
       const invAlert = checkInventoryDays(days, availableQty, asin, categoryKey, stage, snapshotDate)
       if (invAlert) allAlerts.push(invAlert)
+    }
+
+    // 评分告警（来自关键词监控）
+    const rating = ratingByAsin.get(asin)
+    if (rating !== undefined) {
+      const ratingAlert = checkRating(rating, asin, categoryKey, stage, snapshotDate)
+      if (ratingAlert) allAlerts.push(ratingAlert)
     }
   }
 

@@ -90,6 +90,10 @@ const CONFIG: ConfigStore = {
     inventory_slow_moving_days:     90,
     inventory_slow_moving_min_orders: 5,
 
+    // 评分告警阈值（来自关键词监控）
+    rating_red:    3.8,
+    rating_yellow: 4.0,
+
     // 数据时间窗口
     window_search_terms_days:             30,
     window_campaign_months:               3,

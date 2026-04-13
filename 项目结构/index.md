@@ -24,9 +24,9 @@
 | 文档 | 内容 |
 |------|------|
 | [01-目录结构.md](./01-目录结构.md) | 代码目录树及各模块职责说明 |
-| [02-数据库模型.md](./02-数据库模型.md) | 4 张表的 Prisma schema + 设计决策说明 |
-| [03-数据流.md](./03-数据流.md) | 从上传文件到页面展示的完整数据流 |
-| [04-Chat实现.md](./04-Chat实现.md) | Claude agentic loop、8 个工具定义与 SSE 流式输出 |
+| [02-数据库模型.md](./02-数据库模型.md) | 7 张表的 Prisma schema + 设计决策说明 |
+| [03-数据流.md](./03-数据流.md) | 从上传文件到页面展示的完整数据流（含 parser 结构、fileType 推断、告警触发） |
+| [04-Chat实现.md](./04-Chat实现.md) | 多 Session + Claude Agent SDK Loop、Skill 系统、SSE 事件规范 |
 
 ---
 
@@ -49,4 +49,9 @@
 
 5. 配置参数三层覆盖
    global → category → stage，通过 getParam(key, category?, stage?) 统一读取
+
+6. ASIN / 品类配置通过 prisma/seed.ts 维护，MVP 不提供管理界面
+   变更流程：编辑 seed.ts → npx prisma db seed → 重新上传相关报表（使告警引擎重算）
+   涉及表：CategoryMap（品类-ASIN 列表）+ AsinConfig（ASIN 阶段 + 品类归属）
+   两表须保持同步，任何一处遗漏将导致规则引擎无法正确过滤 ASIN 范围
 ```
