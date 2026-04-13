@@ -12,7 +12,7 @@
 import { NextRequest } from "next/server"
 import { db } from "@/lib/db"
 import { buildAgentSystemPrompt } from "@/lib/buildSystemPrompt"
-import { getSessionSkillTools } from "@/lib/skills/index"
+import { getSessionSkillTools, getSkillIndex } from "@/lib/skills/index"
 import { runAgentLoop } from "@/lib/agentLoop"
 import type Anthropic from "@anthropic-ai/sdk"
 
@@ -60,9 +60,16 @@ export async function POST(
       history.push({ role: "user", content: userMessage })
 
       // 2. 构建 System Prompt（每次重新拉取，感知新上传文件）
-      const systemPrompt = await buildAgentSystemPrompt()
+      //    注入技能索引（对应 Agent SDK settingSources: ["project"]）
+      const [basePrompt, skillIndex] = await Promise.all([
+        buildAgentSystemPrompt(),
+        Promise.resolve(getSkillIndex()),
+      ])
+      const systemPrompt = skillIndex
+        ? `${basePrompt}\n\n${skillIndex}`
+        : basePrompt
 
-      // 3. 获取本 Session 挂载的 Skill 工具集
+      // 3. 获取本 Session 挂载的 Skill 工具集（对应 Agent SDK allowedTools）
       const skillTools = await getSessionSkillTools(sessionId)
 
       // 4. 执行 Agent Loop

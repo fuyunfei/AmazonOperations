@@ -64,15 +64,16 @@ yz-ops-ai/
     └── lib/
         ├── db.ts                   ← Prisma client 单例
         ├── config.ts               ← 三层参数配置（global → category → stage）
-        ├── agentLoop.ts            ← 流式 Agent Loop（SDK stream()，最多 10 轮）
+        ├── agentLoop.ts            ← 流式 Agent Loop（for await SSE 事件，最多 10 轮）
         ├── agentTools.ts           ← 8 个工具定义 + 服务端执行逻辑
+        ├── skillLoader.ts          ← 从 .claude/skills/ 加载 SKILL.md 文件
         ├── buildSystemPrompt.ts    ← 每次发消息重建 System Prompt（感知新文件）
         ├── parsers/                ← xlsx 解析器，每种报表一个文件
         │   ├── identifier.ts       ← 按文件名推断 fileType
         │   ├── utils.ts            ← Nordhive 格式通用工具
         │   └── parse*.ts           ← 各报表 parser（共 9 种）
         ├── skills/
-        │   ├── index.ts            ← Skill 注册表 + executeTool 路由
+        │   ├── index.ts            ← Skill 注册表（SKILL.md + 代码技能）+ executeTool 路由
         │   └── amazonOps.ts        ← 内置 Amazon Ops Skill（封装 8 个工具）
         └── rules/
             ├── alerts/             ← 每日告警规则引擎
@@ -82,6 +83,11 @@ yz-ops-ai/
             │   ├── inventory.ts    ← 可售天数不足
             │   └── reviews.ts      ← 评分告警（来自关键词监控）
             └── sop/                ← 广告优化 SOP 规则（P0–P3）
+
+.claude/
+└── skills/                         ← Agent SDK 技能目录（settingSources: project）
+    └── amazon-ops/
+        └── SKILL.md                ← Amazon 运营技能定义（YAML frontmatter + 文档）
 ```
 
 ---
@@ -124,6 +130,8 @@ yz-ops-ai/
 
 ## AI Chat 架构
 
+采用 **Agent SDK 架构模式**（基于 `@anthropic-ai/sdk`）：
+
 ```
 ChatPanel（两栏）
   左栏：Session 列表 + 新建对话（CRUD via /api/sessions）
@@ -132,9 +140,12 @@ ChatPanel（两栏）
           ▼
 POST /api/sessions/:id/run
   ├── 加载历史（最近 40 条消息）
-  ├── buildAgentSystemPrompt()（感知最新上传文件）
+  ├── buildAgentSystemPrompt()        ← 感知最新上传文件
+  ├── getSkillIndex()                 ← 从 .claude/skills/ 注入技能描述
+  ├── getSessionSkillTools()          ← 获取可用工具（对应 allowedTools）
   └── runAgentLoop()
-        ├── SDK stream() → on("text") → SSE: text_delta
+        ├── for await event of stream ← 对应 includePartialMessages 流式模式
+        │     content_block_delta → SSE: text_delta（实时输出）
         ├── stop_reason=tool_use → executeTool() → SSE: tool_start / tool_done
         └── stop_reason=end_turn → 写 DB → SSE: done
 ```
@@ -142,6 +153,27 @@ POST /api/sessions/:id/run
 **SSE 事件类型**：`session_start` · `text_delta` · `tool_start` · `tool_done` · `done` · `error`
 
 **8 个内置工具**（`lib/agentTools.ts`）：`get_metrics` · `get_acos_history` · `get_inventory` · `get_ad_campaigns` · `get_search_terms` · `get_alerts` · `list_uploaded_files` · `get_file_data`
+
+### 新增技能（Skills）
+
+技能遵循 Agent SDK 的 SKILL.md 规范，存放于 `.claude/skills/`，服务启动时自动加载。
+
+**新增技能步骤：**
+1. 在 `.claude/skills/<skill-name>/` 创建 `SKILL.md`（含 YAML frontmatter: `name` / `description` / `tools`）
+2. 在 `src/lib/skills/index.ts` 的 `registeredSkills` 数组追加技能实现（工具定义 + 执行器）
+3. 在 `src/lib/agentTools.ts` 实现新工具的执行逻辑
+
+`SKILL.md` 示例：
+```markdown
+---
+name: my-skill
+description: 一句话描述，Claude 根据此决定是否调用本技能
+tools:
+  - my_tool_a
+  - my_tool_b
+---
+# 技能正文（使用指南、工具说明等）
+```
 
 ---
 
