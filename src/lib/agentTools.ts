@@ -1,11 +1,11 @@
 /**
  * lib/agentTools.ts
  *
- * Claude 工具定义（TOOL_DEFINITIONS）+ 服务端工具执行（executeTool）
- * 所有工具通过查询 SQLite DB 返回 JSON 字符串给 Claude。
+ * 工具执行逻辑（executeTool）+ 新鲜度计算（getFreshness）
+ * 所有工具通过查询 SQLite DB 返回 JSON 字符串。
+ * 工具 schema 定义已迁移到 mcpTools.ts（使用 Agent SDK tool() + zod）。
  */
 
-import Anthropic from "@anthropic-ai/sdk"
 import { db } from "@/lib/db"
 
 // ── 新鲜度计算 ─────────────────────────────────────────────────────────────
@@ -33,126 +33,6 @@ export function getFreshness(
   if (daysAgo <= t.ok)    return "ok"
   return "stale"
 }
-
-// ── 工具定义 ───────────────────────────────────────────────────────────────
-
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
-  {
-    name: "get_metrics",
-    description: "查询产品 KPI 快照（GMV、订单量、广告花费、ACOS、TACoS、CTR、CVR）。time_window: today=最新一天 / yesterday=前一天 / w7=近7天聚合 / w14=近14天聚合 / d30=近30天聚合",
-    input_schema: {
-      type: "object",
-      properties: {
-        time_window: {
-          type: "string",
-          enum: ["today", "yesterday", "w7", "w14", "d30"],
-        },
-        asin: {
-          type: "string",
-          description: "可选，不传则返回所有 ASIN 的聚合数据",
-        },
-      },
-      required: ["time_window"],
-    },
-  },
-  {
-    name: "get_acos_history",
-    description: "查询某 ASIN 的 ACoS + GMV 日趋势（来自 ProductMetricDay 时序表），用于分析广告效率变化趋势",
-    input_schema: {
-      type: "object",
-      properties: {
-        asin: { type: "string", description: "ASIN 编号" },
-        days: { type: "number", description: "最近 N 天，默认 30" },
-      },
-      required: ["asin"],
-    },
-  },
-  {
-    name: "get_inventory",
-    description: "查询所有 ASIN 的库存状况（可售库存量、补货建议）",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  },
-  {
-    name: "get_ad_campaigns",
-    description: "查询广告活动维度数据（来自广告活动重构报表）。filter: all=全部 / high_acos=高ACOS / over_budget=超预算 / top_spend=花费最高",
-    input_schema: {
-      type: "object",
-      properties: {
-        filter: {
-          type: "string",
-          enum: ["all", "high_acos", "over_budget", "top_spend"],
-        },
-        asin: { type: "string", description: "可选，限定某个 ASIN" },
-      },
-      required: ["filter"],
-    },
-  },
-  {
-    name: "get_search_terms",
-    description: "查询搜索词广告表现数据（来自搜索词重构报表）。filter: all=全部 / zero_conv=零转化词 / winner=高效词(ACoS≤35%且CVR≥4%) / high_acos=高ACOS / high_spend=高花费",
-    input_schema: {
-      type: "object",
-      properties: {
-        filter: {
-          type: "string",
-          enum: ["all", "zero_conv", "winner", "high_acos", "high_spend"],
-        },
-        asin: { type: "string", description: "可选，限定某个 ASIN" },
-      },
-      required: ["filter"],
-    },
-  },
-  {
-    name: "get_alerts",
-    description: "查询已触发的每日告警（最新快照）。level: red=红色危急 / yellow=黄色关注 / all=全部",
-    input_schema: {
-      type: "object",
-      properties: {
-        level: {
-          type: "string",
-          enum: ["all", "red", "yellow"],
-          description: "red=红色危急告警 / yellow=黄色关注告警 / all=全部",
-        },
-        category: {
-          type: "string",
-          description: "可选，按品类过滤，如 'mattress' / 'pump' / 'scooter'",
-        },
-      },
-      required: ["level"],
-    },
-  },
-  {
-    name: "list_uploaded_files",
-    description: "列出 context/ 中已上传的所有报表文件及其上传日期和新鲜度状态",
-    input_schema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  },
-  {
-    name: "get_file_data",
-    description: "读取任意已上传报表的原始解析数据，适用于 aba_search（ABA搜索词对比）、cost_mgmt（成本管理）、placement_us_30d（广告位报表）等无专用工具的文件类型",
-    input_schema: {
-      type: "object",
-      properties: {
-        file_type: {
-          type: "string",
-          description: "fileType 枚举值，如 aba_search / cost_mgmt / placement_us_30d / campaign_3m 等",
-        },
-        limit: {
-          type: "number",
-          description: "返回行数上限，默认 50",
-        },
-      },
-      required: ["file_type"],
-    },
-  },
-]
 
 // ── 工具执行 ───────────────────────────────────────────────────────────────
 
