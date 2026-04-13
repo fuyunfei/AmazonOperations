@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useAppStore } from "@/store/appStore";
 import { LayoutDashboard, MessageSquare, Bed, Wrench, Bike, Package } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 interface CategoryInfo {
   categoryKey: string;
@@ -14,18 +15,6 @@ const CATEGORY_ICONS: Record<string, ReactNode> = {
   mattress: <Bed size={16} />,
   pump:     <Wrench size={16} />,
   scooter:  <Bike size={16} />,
-};
-
-const C = {
-  sidebar:           "#ffffff",
-  sidebarHover:      "#f0f1f5",
-  sidebarActive:     "rgba(59,91,219,0.07)",
-  sidebarText:       "#5c6070",
-  sidebarTextActive: "#3b5bdb",
-  text:              "#1a1d28",
-  textDim:           "#969bb0",
-  border:            "#e8e9ee",
-  accent:            "#3b5bdb",
 };
 
 export default function ProductRail() {
@@ -65,28 +54,22 @@ export default function ProductRail() {
   ];
 
   return (
-    <div style={{
-      width: 180, background: C.sidebar, display: "flex", flexDirection: "column",
-      flexShrink: 0, borderRight: `1px solid #ecedf1`, height: "100vh",
-    }}>
+    <div className="w-[180px] bg-background flex flex-col shrink-0 border-r border-border h-screen">
       {/* Logo */}
-      <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid #ecedf1" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 28, height: 28, borderRadius: 7,
-            background: "linear-gradient(135deg, #3b5bdb, #7c3aed)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 13, fontWeight: 700, color: "#fff",
-          }}>N</div>
+      <div className="px-4 pt-5 pb-4 border-b border-border">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-[7px] bg-gradient-to-br from-[#3b5bdb] to-[#7c3aed] flex items-center justify-center text-[13px] font-bold text-white">
+            N
+          </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.text, lineHeight: 1.1 }}>YZ-Ops</div>
-            <div style={{ fontSize: 9, color: C.textDim, letterSpacing: "0.08em" }}>AI · Nordhive</div>
+            <div className="text-[13px] font-bold text-foreground leading-tight">YZ-Ops</div>
+            <div className="text-[9px] text-muted-foreground tracking-wide">AI · Nordhive</div>
           </div>
         </div>
       </div>
 
       {/* Pages */}
-      <div style={{ padding: "10px 8px 0" }}>
+      <div className="px-2 pt-2.5">
         {pages.map((item) => (
           <NavItem
             key={item.id}
@@ -99,12 +82,10 @@ export default function ProductRail() {
       </div>
 
       {/* Categories */}
-      <div style={{ padding: "8px 8px" }}>
-        <div style={{
-          fontSize: 9, fontWeight: 600, color: C.textDim,
-          letterSpacing: "0.08em", padding: "4px 12px",
-          textTransform: "uppercase",
-        }}>品类</div>
+      <div className="px-2 py-2">
+        <div className="text-[9px] font-semibold text-muted-foreground tracking-wide uppercase px-3 py-1">
+          品类
+        </div>
 
         {categories.map((cat) => (
           <NavItem
@@ -118,13 +99,10 @@ export default function ProductRail() {
         ))}
       </div>
 
-      <div style={{ flex: 1 }} />
+      <div className="flex-1" />
 
       {/* Bottom: data date */}
-      <div style={{
-        padding: "12px 16px", borderTop: "1px solid #ecedf1",
-        fontSize: 10, color: C.textDim,
-      }}>
+      <div className="px-4 py-3 border-t border-border text-xs text-muted-foreground">
         {latestDate ? `数据截至 ${latestDate}` : "暂无数据"}
       </div>
     </div>
@@ -140,30 +118,19 @@ function NavItem({
   badge?:  number;
   onClick: () => void;
 }) {
-  const [hover, setHover] = useState(false);
   return (
     <div
+      data-active={active}
       onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "flex", alignItems: "center", gap: 10,
-        padding: "9px 12px", borderRadius: 8, marginBottom: 2, cursor: "pointer",
-        background: active ? "rgba(59,91,219,0.07)" : hover ? "#f0f1f5" : "transparent",
-        color:      active ? "#3b5bdb" : "#5c6070",
-        fontSize: 13, fontWeight: active ? 600 : 400,
-        transition: "background 0.12s, color 0.12s",
-        position: "relative",
-      }}
+      className="flex items-center gap-2.5 px-3 py-2 rounded-lg mb-0.5 cursor-pointer
+        text-[13px] text-muted-foreground transition-colors
+        hover:bg-muted
+        data-[active=true]:bg-primary/5 data-[active=true]:text-primary data-[active=true]:font-semibold"
     >
-      <span style={{ width: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>{icon}</span>
-      <span style={{ flex: 1 }}>{label}</span>
+      <span className="w-5 flex items-center justify-center">{icon}</span>
+      <span className="flex-1">{label}</span>
       {badge != null && (
-        <span style={{
-          fontSize: 9, fontWeight: 700,
-          color: "#d63031", background: "rgba(214,48,49,0.12)",
-          padding: "1px 5px", borderRadius: 8,
-        }}>{badge}红</span>
+        <Badge variant="destructive">{badge}红</Badge>
       )}
     </div>
   );
