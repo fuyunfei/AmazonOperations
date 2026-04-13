@@ -5,7 +5,7 @@ import {
   Sparkles, Plus, Copy, Check, Wrench,
   MessageSquare, Trash2, Pencil, X,
   BarChart3, Package, Bell, TrendingUp,
-  RefreshCw, ArrowDown,
+  RefreshCw, ArrowDown, User,
 } from "lucide-react"
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
@@ -15,7 +15,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import {
   Select,
@@ -99,6 +98,22 @@ interface ToolBubble {
   resultSummary?: string
 }
 
+// ── Relative time helper ──────────────────────────────────────────────────────
+
+function relativeTime(dateStr: string): string {
+  const now = Date.now()
+  const then = new Date(dateStr).getTime()
+  const diff = now - then
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return "刚刚"
+  if (mins < 60) return `${mins}分钟前`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}天前`
+  return new Date(dateStr).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function ChatPanel() {
@@ -109,7 +124,7 @@ export default function ChatPanel() {
   const [toolBubbles, setToolBubbles]         = useState<ToolBubble[]>([])
   const [isStreaming, setIsStreaming]         = useState(false)
   const [input, setInput]                     = useState("")
-  const [selectedModel, setSelectedModel]     = useState<string>(process.env.NEXT_PUBLIC_DEFAULT_MODEL || "sonnet")
+  const [selectedModel, setSelectedModel]     = useState<string>(process.env.NEXT_PUBLIC_DEFAULT_MODEL || "haiku")
   const [copiedId, setCopiedId]               = useState<string | null>(null)
   const [renamingId, setRenamingId]           = useState<string | null>(null)
   const [renameValue, setRenameValue]         = useState("")
@@ -410,9 +425,10 @@ export default function ChatPanel() {
                     className="flex-1 h-5 text-xs border-0 border-b border-foreground rounded-none bg-transparent px-0 py-0 focus-visible:ring-0 focus-visible:border-foreground"
                   />
                 ) : (
-                  <span className="flex-1 text-xs truncate text-foreground/80">
-                    {session.title}
-                  </span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs truncate block text-foreground/80">{session.title}</span>
+                    <span className="text-[10px] text-muted-foreground">{relativeTime(session.updatedAt)}</span>
+                  </div>
                 )}
 
                 {renamingId !== session.id && (
@@ -468,27 +484,28 @@ export default function ChatPanel() {
 
             {/* Welcome state */}
             {messages.length === 0 && !isStreaming && (
-              <div>
-                <div className="text-center mb-8">
-                  <div className="inline-flex items-center justify-center size-10 rounded-xl bg-primary mb-3">
-                    <Sparkles size={18} className="text-primary-foreground" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground">YZ-Ops AI</p>
-                  <p className="text-xs mt-1 text-muted-foreground">跨品类运营数据分析 · 已上传文件均可查询</p>
+              <div className="flex flex-col items-center justify-center min-h-[50vh]">
+                <div className="inline-flex items-center justify-center size-14 rounded-2xl bg-primary mb-4">
+                  <Sparkles size={24} className="text-primary-foreground" />
                 </div>
-                <Suggestions className="justify-center flex-wrap">
-                  {QUICK_PROMPTS.map(prompt => (
-                    <Suggestion
-                      key={prompt.label}
-                      suggestion={prompt.text}
-                      onClick={(text) => handleSend(text)}
-                      className="gap-1.5"
-                    >
-                      <span>{prompt.icon}</span>
-                      <span>{prompt.label}</span>
-                    </Suggestion>
-                  ))}
-                </Suggestions>
+                <p className="text-base font-semibold text-foreground">YZ-Ops AI</p>
+                <p className="text-sm mt-1 text-muted-foreground">跨品类运营数据分析助手</p>
+                <p className="text-xs mt-0.5 text-muted-foreground/60">已上传的报表文件均可查询分析</p>
+                <div className="mt-8">
+                  <Suggestions className="justify-center flex-wrap">
+                    {QUICK_PROMPTS.map(prompt => (
+                      <Suggestion
+                        key={prompt.label}
+                        suggestion={prompt.text}
+                        onClick={(text) => handleSend(text)}
+                        className="gap-1.5"
+                      >
+                        <span>{prompt.icon}</span>
+                        <span>{prompt.label}</span>
+                      </Suggestion>
+                    ))}
+                  </Suggestions>
+                </div>
               </div>
             )}
 
@@ -497,11 +514,18 @@ export default function ChatPanel() {
               {messages.map(msg => {
                 if (msg.role === "user") {
                   return (
-                    <Message key={msg.id} from="user">
-                      <MessageContent>
-                        <MessageResponse>{msg.content}</MessageResponse>
-                      </MessageContent>
-                    </Message>
+                    <div key={msg.id} className="flex gap-3 items-start justify-end">
+                      <div className="flex-1 min-w-0">
+                        <Message from="user">
+                          <MessageContent>
+                            <MessageResponse>{msg.content}</MessageResponse>
+                          </MessageContent>
+                        </Message>
+                      </div>
+                      <div className="flex-shrink-0 size-7 rounded-full bg-muted flex items-center justify-center mt-0.5">
+                        <User size={14} className="text-muted-foreground" />
+                      </div>
+                    </div>
                   )
                 }
 
@@ -509,86 +533,111 @@ export default function ChatPanel() {
 
                 if (isError) {
                   return (
-                    <Message key={msg.id} from="assistant">
-                      <MessageContent>
-                        <div className="text-destructive text-sm">{msg.content}</div>
-                      </MessageContent>
-                      <MessageToolbar>
-                        <MessageActions>
-                          <MessageAction tooltip="重试" onClick={() => handleRetry(msg)}>
-                            <RefreshCw size={14} />
-                          </MessageAction>
-                        </MessageActions>
-                      </MessageToolbar>
-                    </Message>
+                    <div key={msg.id} className="flex gap-3 items-start group/msg">
+                      <div className="flex-shrink-0 size-7 rounded-full bg-primary flex items-center justify-center mt-0.5">
+                        <Sparkles size={14} className="text-primary-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <Message from="assistant">
+                          <MessageContent>
+                            <div className="text-destructive text-sm">{msg.content}</div>
+                          </MessageContent>
+                          <MessageToolbar className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                            <MessageActions>
+                              <MessageAction tooltip="重试" onClick={() => handleRetry(msg)}>
+                                <RefreshCw size={14} />
+                              </MessageAction>
+                            </MessageActions>
+                          </MessageToolbar>
+                        </Message>
+                      </div>
+                    </div>
                   )
                 }
 
                 return (
-                  <Message key={msg.id} from="assistant">
-                    {/* Tool call history (from DB) */}
-                    {msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {msg.toolCalls.map((tc, idx) => (
-                          <Badge key={idx} variant="secondary" className="gap-1 text-[10px] font-normal">
-                            <Wrench size={9} />
-                            {tc.tool}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                    <MessageContent>
-                      <MessageResponse>{msg.content}</MessageResponse>
-                    </MessageContent>
-                    {msg.content && (
-                      <MessageToolbar>
-                        <MessageActions>
-                          <MessageAction tooltip="复制" onClick={() => handleCopy(msg.id, msg.content)}>
-                            {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
-                          </MessageAction>
-                          <MessageAction tooltip="重新生成" onClick={() => handleRegenerate(msg)}>
-                            <RefreshCw size={14} />
-                          </MessageAction>
-                        </MessageActions>
-                      </MessageToolbar>
-                    )}
-                  </Message>
+                  <div key={msg.id} className="flex gap-3 items-start group/msg">
+                    <div className="flex-shrink-0 size-7 rounded-full bg-primary flex items-center justify-center mt-0.5">
+                      <Sparkles size={14} className="text-primary-foreground" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <Message from="assistant">
+                        {/* Tool call history (from DB) */}
+                        {msg.toolCalls && msg.toolCalls.length > 0 && (
+                          <div className="flex flex-col gap-1 mb-1">
+                            {msg.toolCalls.map((tc, idx) => (
+                              <div key={idx} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <Wrench size={10} />
+                                <span>{tc.tool}</span>
+                                <Check size={10} className="text-emerald-600" />
+                                {tc.resultSummary && (
+                                  <span className="text-muted-foreground/70">{tc.resultSummary}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <MessageContent>
+                          <MessageResponse>{msg.content}</MessageResponse>
+                        </MessageContent>
+                        {msg.content && (
+                          <MessageToolbar className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                            <MessageActions>
+                              <MessageAction tooltip="复制" onClick={() => handleCopy(msg.id, msg.content)}>
+                                {copiedId === msg.id ? <Check size={14} /> : <Copy size={14} />}
+                              </MessageAction>
+                              <MessageAction tooltip="重新生成" onClick={() => handleRegenerate(msg)}>
+                                <RefreshCw size={14} />
+                              </MessageAction>
+                            </MessageActions>
+                          </MessageToolbar>
+                        )}
+                      </Message>
+                    </div>
+                  </div>
                 )
               })}
 
               {/* Streaming assistant message */}
               {isStreaming && (
-                <Message from="assistant">
-                  {/* Active tool bubbles */}
-                  {toolBubbles.length > 0 && (
-                    <div className="flex flex-col gap-1">
-                      {toolBubbles.map((bubble, idx) => (
-                        <Card key={idx} size="sm" className="w-fit py-0 ring-0 border-0 bg-muted/60">
-                          <CardContent className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-muted-foreground">
-                            <Wrench size={10} />
-                            <span>{bubble.tool}</span>
-                            {bubble.status === "loading" ? (
-                              <span className="text-muted-foreground/60">…</span>
-                            ) : (
-                              <>
-                                <Check size={10} className="text-green-600" />
-                                {bubble.resultSummary && (
-                                  <span className="text-muted-foreground/70">{bubble.resultSummary}</span>
+                <div className="flex gap-3 items-start">
+                  <div className="flex-shrink-0 size-7 rounded-full bg-primary flex items-center justify-center mt-0.5">
+                    <Sparkles size={14} className="text-primary-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <Message from="assistant">
+                      {/* Active tool bubbles */}
+                      {toolBubbles.length > 0 && (
+                        <div className="flex flex-col gap-1">
+                          {toolBubbles.map((bubble, idx) => (
+                            <Card key={idx} size="sm" className="w-fit py-0 ring-0 border-0 bg-muted/60">
+                              <CardContent className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-muted-foreground">
+                                <Wrench size={10} />
+                                <span>{bubble.tool}</span>
+                                {bubble.status === "loading" ? (
+                                  <span className="text-muted-foreground/60">…</span>
+                                ) : (
+                                  <>
+                                    <Check size={10} className="text-green-600" />
+                                    {bubble.resultSummary && (
+                                      <span className="text-muted-foreground/70">{bubble.resultSummary}</span>
+                                    )}
+                                  </>
                                 )}
-                              </>
-                            )}
-                          </CardContent>
-                        </Card>
-                      ))}
-                    </div>
-                  )}
-                  <MessageContent>
-                    {isTyping
-                      ? <TypingDots />
-                      : <MessageResponse isAnimating>{streamingText}</MessageResponse>
-                    }
-                  </MessageContent>
-                </Message>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+                      )}
+                      <MessageContent>
+                        {isTyping
+                          ? <TypingDots />
+                          : <MessageResponse isAnimating>{streamingText}</MessageResponse>
+                        }
+                      </MessageContent>
+                    </Message>
+                  </div>
+                </div>
               )}
             </div>
 
