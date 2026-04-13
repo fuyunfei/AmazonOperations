@@ -54,38 +54,85 @@ export async function GET() {
       select:  { snapshotDate: true },
     })
 
+    // Fetch all daily rows for the last 7 days (shared across grand total & categories)
+    let allDailyRows: Awaited<ReturnType<typeof db.productMetricDay.findMany>> = []
+    if (latestRow) {
+      const fromDate = subtractDays(latestRow.date, 6)
+      allDailyRows = await db.productMetricDay.findMany({
+        where: { date: { gte: fromDate } },
+      })
+    }
+
+    // Daily totals for sparklines (last 7 days, summed across all ASINs)
+    const dailyMap = new Map<string, { gmv: number; orders: number; ad_spend: number; ad_sales: number }>()
+    for (const row of allDailyRows) {
+      const m = JSON.parse(row.metrics) as MetricsRaw
+      const existing = dailyMap.get(row.date) ?? { gmv: 0, orders: 0, ad_spend: 0, ad_sales: 0 }
+      existing.gmv      += m.gmv      ?? 0
+      existing.orders   += m.orders   ?? 0
+      existing.ad_spend += m.ad_spend ?? 0
+      existing.ad_sales += m.ad_sales ?? 0
+      dailyMap.set(row.date, existing)
+    }
+    const dailyTotals = Array.from(dailyMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, totals]) => ({ date, ...totals }))
+
+    // Previous week totals for delta calculation (7 days before the current window)
+    let prevTotal = { gmv: 0, orders: 0, ad_spend: 0, ad_sales: 0 }
+    if (latestRow) {
+      const prevFromDate = subtractDays(latestRow.date, 13)
+      const prevToDate   = subtractDays(latestRow.date, 7)
+      const prevRows = await db.productMetricDay.findMany({
+        where: { date: { gte: prevFromDate, lte: prevToDate } },
+      })
+      for (const row of prevRows) {
+        const m = JSON.parse(row.metrics) as MetricsRaw
+        prevTotal.gmv      += m.gmv      ?? 0
+        prevTotal.orders   += m.orders   ?? 0
+        prevTotal.ad_spend += m.ad_spend ?? 0
+        prevTotal.ad_sales += m.ad_sales ?? 0
+      }
+    }
+
     // Per-category summary
     const summary = await Promise.all(categories.map(async (cat) => {
       const catAsins = JSON.parse(cat.asins) as string[]
 
-      // W7 KPIs
+      // W7 KPIs (use pre-fetched allDailyRows filtered by category ASINs)
       let kpi: Totals & ReturnType<typeof derived> & { dayCount: number } = {
         ...emptyTotals(), ...derived(emptyTotals()), dayCount: 0
       }
 
-      if (latestRow && catAsins.length > 0) {
-        const fromDate = subtractDays(latestRow.date, 6)
-        const rows = await db.productMetricDay.findMany({
-          where: { asin: { in: catAsins }, date: { gte: fromDate } },
-        })
-        if (rows.length > 0) {
-          const totals = rows.reduce<Totals>((acc, row) => {
-            const m = JSON.parse(row.metrics) as MetricsRaw
-            return {
-              gmv:         acc.gmv         + (m.gmv         ?? 0),
-              orders:      acc.orders      + (m.orders      ?? 0),
-              units:       acc.units       + (m.units       ?? 0),
-              ad_spend:    acc.ad_spend    + (m.ad_spend    ?? 0),
-              ad_sales:    acc.ad_sales    + (m.ad_sales    ?? 0),
-              ad_orders:   acc.ad_orders   + (m.ad_orders   ?? 0),
-              impressions: acc.impressions + (m.impressions ?? 0),
-              clicks:      acc.clicks      + (m.clicks      ?? 0),
-              sessions:    acc.sessions    + (m.sessions    ?? 0),
-            }
-          }, emptyTotals())
-          kpi = { ...totals, ...derived(totals), dayCount: rows.length }
-        }
+      const catDailyRows = allDailyRows.filter(r => catAsins.includes(r.asin))
+
+      if (catDailyRows.length > 0) {
+        const totals = catDailyRows.reduce<Totals>((acc, row) => {
+          const m = JSON.parse(row.metrics) as MetricsRaw
+          return {
+            gmv:         acc.gmv         + (m.gmv         ?? 0),
+            orders:      acc.orders      + (m.orders      ?? 0),
+            units:       acc.units       + (m.units       ?? 0),
+            ad_spend:    acc.ad_spend    + (m.ad_spend    ?? 0),
+            ad_sales:    acc.ad_sales    + (m.ad_sales    ?? 0),
+            ad_orders:   acc.ad_orders   + (m.ad_orders   ?? 0),
+            impressions: acc.impressions + (m.impressions ?? 0),
+            clicks:      acc.clicks      + (m.clicks      ?? 0),
+            sessions:    acc.sessions    + (m.sessions    ?? 0),
+          }
+        }, emptyTotals())
+        kpi = { ...totals, ...derived(totals), dayCount: catDailyRows.length }
       }
+
+      // Per-category daily GMV for mini bar chart
+      const catDailyMap = new Map<string, number>()
+      for (const row of catDailyRows) {
+        const m = JSON.parse(row.metrics) as MetricsRaw
+        catDailyMap.set(row.date, (catDailyMap.get(row.date) ?? 0) + (m.gmv ?? 0))
+      }
+      const daily = Array.from(catDailyMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, gmv]) => ({ date, gmv }))
 
       // Alert counts
       let alertRed = 0
@@ -104,6 +151,7 @@ export async function GET() {
         displayName:  cat.displayName,
         asins:        catAsins,
         kpi,
+        daily,
         alerts: { red: alertRed, yellow: alertYellow },
         snapshotDate: latestAlert?.snapshotDate ?? null,
       }
@@ -123,9 +171,11 @@ export async function GET() {
     }), emptyTotals())
 
     return NextResponse.json({
-      period:      latestRow ? `近7天 (截至 ${latestRow.date})` : "暂无数据",
-      categories:  summary,
-      grandTotal:  { ...grandTotals, ...derived(grandTotals) },
+      period:         latestRow ? `近7天 (截至 ${latestRow.date})` : "暂无数据",
+      categories:     summary,
+      grandTotal:     { ...grandTotals, ...derived(grandTotals) },
+      dailyTotals,
+      prevWeekTotal:  prevTotal,
       alertsTotal: {
         red:    summary.reduce((s, c) => s + c.alerts.red, 0),
         yellow: summary.reduce((s, c) => s + c.alerts.yellow, 0),
