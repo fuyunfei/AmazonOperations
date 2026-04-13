@@ -4,7 +4,9 @@ import { useState, useRef, useEffect, useCallback } from "react"
 import {
   Sparkles, Plus, Send, Copy, Check, Wrench,
   MessageSquare, Trash2, Pencil, X,
+  BarChart3, Package, Bell, TrendingUp,
 } from "lucide-react"
+import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
@@ -120,12 +122,12 @@ function TypingDots() {
 
 // ── Quick prompts ──────────────────────────────────────────────────────────────
 
-const QUICK_PROMPTS = [
-  { icon: "📊", label: "诊断广告 ACoS",  text: "请帮我诊断当前广告的 ACoS 表现，识别高花费低转化的关键词，并给出优化优先级建议。" },
-  { icon: "📦", label: "库存健康度",       text: "请分析当前产品的库存健康状况，评估可售天数和补货紧迫性，并给出补货建议。" },
-  { icon: "🔔", label: "查看当前告警",    text: "请列出所有当前告警（红色和黄色），并按优先级给出处理建议。" },
-  { icon: "📈", label: "销售趋势分析",   text: "请分析最近7天的销售趋势，包括GMV、订单量、Sessions的日环比变化。" },
-] as const
+const QUICK_PROMPTS: { icon: ReactNode; label: string; text: string }[] = [
+  { icon: <BarChart3 size={13} />,  label: "诊断广告 ACoS",  text: "请帮我诊断当前广告的 ACoS 表现，识别高花费低转化的关键词，并给出优化优先级建议。" },
+  { icon: <Package size={13} />,    label: "库存健康度",       text: "请分析当前产品的库存健康状况，评估可售天数和补货紧迫性，并给出补货建议。" },
+  { icon: <Bell size={13} />,       label: "查看当前告警",    text: "请列出所有当前告警（红色和黄色），并按优先级给出处理建议。" },
+  { icon: <TrendingUp size={13} />, label: "销售趋势分析",   text: "请分析最近7天的销售趋势，包括GMV、订单量、Sessions的日环比变化。" },
+]
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

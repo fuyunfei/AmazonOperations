@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAppStore } from "@/store/appStore";
+import { LayoutDashboard, MessageSquare, Bed, Wrench, Bike, Package } from "lucide-react";
 
 interface CategoryInfo {
   categoryKey: string;
@@ -9,10 +10,10 @@ interface CategoryInfo {
   redAlerts:   number;
 }
 
-const CATEGORY_EMOJI: Record<string, string> = {
-  mattress: "🛏",
-  pump:     "🔧",
-  scooter:  "🛴",
+const CATEGORY_ICONS: Record<string, ReactNode> = {
+  mattress: <Bed size={16} />,
+  pump:     <Wrench size={16} />,
+  scooter:  <Bike size={16} />,
 };
 
 const C = {
@@ -58,9 +59,9 @@ export default function ProductRail() {
     if (id !== "overview" && id !== "chat") setActiveFuncTab("kpi");
   }
 
-  const pages = [
-    { id: "overview", label: "账号总览", icon: "📊" },
-    { id: "chat",     label: "Chat",     icon: "💬" },
+  const pages: { id: string; label: string; icon: ReactNode }[] = [
+    { id: "overview", label: "账号总览", icon: <LayoutDashboard size={16} /> },
+    { id: "chat",     label: "Chat",     icon: <MessageSquare size={16} /> },
   ];
 
   return (
@@ -86,18 +87,15 @@ export default function ProductRail() {
 
       {/* Pages */}
       <div style={{ padding: "10px 8px 0" }}>
-        {pages.map((item) => {
-          const active = activeNav === item.id;
-          return (
-            <NavItem
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={active}
-              onClick={() => navTo(item.id)}
-            />
-          );
-        })}
+        {pages.map((item) => (
+          <NavItem
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            active={activeNav === item.id}
+            onClick={() => navTo(item.id)}
+          />
+        ))}
       </div>
 
       {/* Categories */}
@@ -108,19 +106,16 @@ export default function ProductRail() {
           textTransform: "uppercase",
         }}>品类</div>
 
-        {categories.map((cat) => {
-          const active = activeNav === cat.categoryKey;
-          return (
-            <NavItem
-              key={cat.categoryKey}
-              icon={CATEGORY_EMOJI[cat.categoryKey] ?? "📦"}
-              label={cat.displayName}
-              active={active}
-              badge={cat.redAlerts > 0 ? cat.redAlerts : undefined}
-              onClick={() => navTo(cat.categoryKey)}
-            />
-          );
-        })}
+        {categories.map((cat) => (
+          <NavItem
+            key={cat.categoryKey}
+            icon={CATEGORY_ICONS[cat.categoryKey] ?? <Package size={16} />}
+            label={cat.displayName}
+            active={activeNav === cat.categoryKey}
+            badge={cat.redAlerts > 0 ? cat.redAlerts : undefined}
+            onClick={() => navTo(cat.categoryKey)}
+          />
+        ))}
       </div>
 
       <div style={{ flex: 1 }} />
@@ -139,7 +134,7 @@ export default function ProductRail() {
 function NavItem({
   icon, label, active, badge, onClick,
 }: {
-  icon:    string;
+  icon:    ReactNode;
   label:   string;
   active:  boolean;
   badge?:  number;
@@ -161,7 +156,7 @@ function NavItem({
         position: "relative",
       }}
     >
-      <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{icon}</span>
+      <span style={{ width: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>{icon}</span>
       <span style={{ flex: 1 }}>{label}</span>
       {badge != null && (
         <span style={{

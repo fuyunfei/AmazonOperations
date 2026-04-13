@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 
-import { AlertTriangle, TrendingUp, DollarSign, ShoppingCart, Loader2 } from "lucide-react";
+import { AlertTriangle, TrendingUp, DollarSign, ShoppingCart, Loader2, Bed, Wrench, Bike, Package } from "lucide-react";
 
 interface CategorySummary {
   categoryKey:  string;
@@ -40,7 +40,11 @@ function fmt(n: number, type: "currency" | "number" | "pct"): string {
   return n.toLocaleString("en-US");
 }
 
-const CATEGORY_EMOJI: Record<string, string> = { mattress: "🛏️", pump: "💨", scooter: "🛴" };
+const CATEGORY_ICONS: Record<string, React.ReactNode> = {
+  mattress: <Bed size={24} color="#6b7280" />,
+  pump:     <Wrench size={24} color="#6b7280" />,
+  scooter:  <Bike size={24} color="#6b7280" />,
+};
 
 export default function OverviewPanel() {
   const { setActiveNav, setActiveFuncTab } = useAppStore();
@@ -153,7 +157,7 @@ export default function OverviewPanel() {
             {/* Card header */}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <span className="text-2xl">{CATEGORY_EMOJI[cat.categoryKey] ?? "📦"}</span>
+                <span className="flex items-center">{CATEGORY_ICONS[cat.categoryKey] ?? <Package size={24} color="#6b7280" />}</span>
                 <div>
                   <p className="font-semibold text-sm" style={{ color: "#1a1a1a" }}>{cat.displayName}</p>
                   <p className="text-[10px]" style={{ color: "#a3a3a3" }}>{cat.asins.length} 个 ASIN</p>
