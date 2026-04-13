@@ -107,7 +107,7 @@ function Sparkline({
   color: string;
 }) {
   return (
-    <div className="w-20 h-9">
+    <div className="w-24 h-10">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data}>
           <Area
@@ -130,7 +130,7 @@ function MiniBarChart({ data }: { data: Array<{ date: string; gmv: number }> }) 
     <div className="h-12 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data}>
-          <Bar dataKey="gmv" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]} />
+          <Bar dataKey="gmv" fill="#3b82f6" radius={[2, 2, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -261,7 +261,7 @@ export default function OverviewPanel() {
       </div>
 
       {/* KPI Metric Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-4 gap-4 mb-6">
         {metrics.map((metric) => (
           <Card key={metric.label}>
             <CardContent className="pt-4">
@@ -271,14 +271,18 @@ export default function OverviewPanel() {
                   <p className="text-2xl font-bold font-mono text-foreground">
                     {metric.value}
                   </p>
-                  <div className="flex items-center gap-1 mt-1">
-                    <span
-                      className={cn("text-xs font-semibold", metric.delta.color)}
-                    >
-                      {metric.delta.label}
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">vs 上周</span>
-                  </div>
+                  {metric.delta.value !== 0 ? (
+                    <div className="flex items-center gap-1 mt-1">
+                      <span className={cn("text-xs font-semibold", metric.delta.color)}>
+                        {metric.delta.label}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">vs 上周</span>
+                    </div>
+                  ) : (
+                    <div className="mt-1">
+                      <span className="text-[10px] text-muted-foreground">近 7 天</span>
+                    </div>
+                  )}
                 </div>
                 <Sparkline
                   data={dailyTotalsWithAcos}
