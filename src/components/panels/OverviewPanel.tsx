@@ -4,15 +4,10 @@ import { useEffect, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { cn } from "@/lib/utils";
 
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  ResponsiveContainer,
-} from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis } from "recharts";
+import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
-import { AlertTriangle, Bed, Wrench, Bike, Package, FileUp } from "lucide-react";
+import { AlertTriangle, Bed, Wrench, Bike, Package, FileUp, DollarSign, ShoppingCart, TrendingUp, Percent } from "lucide-react";
 import { PanelSkeleton } from "@/components/ui/panel-skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -95,9 +90,9 @@ function calcDelta(
   };
 }
 
-/* ---------- Chart components ---------- */
+/* ---------- Chart components (shadcn chart) ---------- */
 
-function Sparkline({
+function MetricChart({
   data,
   dataKey,
   color,
@@ -106,34 +101,43 @@ function Sparkline({
   dataKey: string;
   color: string;
 }) {
+  const config = { [dataKey]: { label: dataKey, color } } satisfies ChartConfig
   return (
-    <div className="w-24 h-10">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data}>
-          <Area
-            type="monotone"
-            dataKey={dataKey}
-            stroke={color}
-            fill={color}
-            fillOpacity={0.1}
-            strokeWidth={2}
-            dot={false}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
+    <ChartContainer config={config} className="h-16 w-full">
+      <AreaChart data={data} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id={`fill-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={color} stopOpacity={0.3} />
+            <stop offset="95%" stopColor={color} stopOpacity={0.05} />
+          </linearGradient>
+        </defs>
+        <Area
+          type="natural"
+          dataKey={dataKey}
+          stroke={color}
+          fill={`url(#fill-${dataKey})`}
+          strokeWidth={2}
+          dot={false}
+        />
+      </AreaChart>
+    </ChartContainer>
   );
 }
 
-function MiniBarChart({ data }: { data: Array<{ date: string; gmv: number }> }) {
+const barConfig = {
+  gmv: { label: "GMV", color: "#3b82f6" },
+} satisfies ChartConfig
+
+function CategoryBarChart({ data }: { data: Array<{ date: string; gmv: number }> }) {
   return (
-    <div className="h-12 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data}>
-          <Bar dataKey="gmv" fill="#3b82f6" radius={[2, 2, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
+    <ChartContainer config={barConfig} className="h-16 w-full">
+      <BarChart data={data} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+        <ChartTooltip
+          content={<ChartTooltipContent hideLabel formatter={(value) => `$${Number(value).toLocaleString()}`} />}
+        />
+        <Bar dataKey="gmv" fill="var(--color-gmv)" radius={[3, 3, 0, 0]} />
+      </BarChart>
+    </ChartContainer>
   );
 }
 
@@ -207,27 +211,21 @@ export default function OverviewPanel() {
       value: fmt(data.grandTotal.gmv, "currency"),
       dataKey: "gmv",
       delta: calcDelta(data.grandTotal.gmv, data.prevWeekTotal.gmv),
-      sparkColor:
-        calcDelta(data.grandTotal.gmv, data.prevWeekTotal.gmv).value >= 0
-          ? "#22c55e"
-          : "#ef4444",
+      sparkColor: "#2563eb",
     },
     {
       label: "总订单",
       value: fmt(data.grandTotal.orders, "number"),
       dataKey: "orders",
       delta: calcDelta(data.grandTotal.orders, data.prevWeekTotal.orders),
-      sparkColor:
-        calcDelta(data.grandTotal.orders, data.prevWeekTotal.orders).value >= 0
-          ? "#22c55e"
-          : "#ef4444",
+      sparkColor: "#7c3aed",
     },
     {
       label: "广告花费",
       value: fmt(data.grandTotal.ad_spend, "currency"),
       dataKey: "ad_spend",
       delta: calcDelta(data.grandTotal.ad_spend, data.prevWeekTotal.ad_spend),
-      sparkColor: "#6b7280",
+      sparkColor: "#f59e0b",
     },
     {
       label: "综合 ACoS",
@@ -237,18 +235,12 @@ export default function OverviewPanel() {
         if (data.grandTotal.acos == null || prevAcos == null)
           return { value: 0, label: "\u2014", color: "text-muted-foreground", arrow: "" };
         const d = calcDelta(data.grandTotal.acos, prevAcos);
-        // For ACoS, down is good (green), up is bad (red) — reverse colors
         return {
           ...d,
-          color:
-            d.value > 1
-              ? "text-destructive"
-              : d.value < -1
-                ? "text-emerald-600"
-                : "text-muted-foreground",
+          color: d.value > 1 ? "text-destructive" : d.value < -1 ? "text-emerald-600" : "text-muted-foreground",
         };
       })(),
-      sparkColor: "#6b7280",
+      sparkColor: "#06b6d4",
     },
   ];
 
@@ -260,37 +252,38 @@ export default function OverviewPanel() {
         <p className="text-xs mt-0.5 text-muted-foreground">{data.period}</p>
       </div>
 
-      {/* KPI Metric Cards */}
+      {/* KPI Metric Cards — shadcn chart style */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {metrics.map((metric) => (
-          <Card key={metric.label}>
-            <CardContent className="pt-4">
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">{metric.label}</p>
-                  <p className="text-2xl font-bold font-mono text-foreground">
-                    {metric.value}
-                  </p>
-                  {metric.delta.value !== 0 ? (
-                    <div className="flex items-center gap-1 mt-1">
-                      <span className={cn("text-xs font-semibold", metric.delta.color)}>
-                        {metric.delta.label}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">vs 上周</span>
-                    </div>
-                  ) : (
-                    <div className="mt-1">
-                      <span className="text-[10px] text-muted-foreground">近 7 天</span>
-                    </div>
-                  )}
-                </div>
-                <Sparkline
-                  data={dailyTotalsWithAcos}
-                  dataKey={metric.dataKey}
-                  color={metric.sparkColor}
-                />
+          <Card key={metric.label} className="overflow-hidden">
+            <CardContent className="p-4 pb-0">
+              <div className="flex items-center gap-1.5 mb-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{metric.label}</p>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <p className="text-2xl font-bold font-mono text-foreground">
+                  {metric.value}
+                </p>
+                {metric.delta.value !== 0 ? (
+                  <span className={cn(
+                    "text-xs font-semibold px-1.5 py-0.5 rounded-md",
+                    metric.delta.value > 0 ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-destructive"
+                  )}>
+                    {metric.delta.label}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">近 7 天</span>
+                )}
               </div>
             </CardContent>
+            {/* Chart fused to card bottom */}
+            <div className="px-1 -mb-1">
+              <MetricChart
+                data={dailyTotalsWithAcos}
+                dataKey={metric.dataKey}
+                color={metric.sparkColor}
+              />
+            </div>
           </Card>
         ))}
       </div>
@@ -376,7 +369,7 @@ export default function OverviewPanel() {
               {/* Mini bar chart — 7-day GMV */}
               {cat.daily && cat.daily.length > 0 && (
                 <div className="mb-3 rounded-md bg-muted/50 p-2">
-                  <MiniBarChart data={cat.daily} />
+                  <CategoryBarChart data={cat.daily} />
                   <p className="text-[10px] text-muted-foreground text-center mt-1">
                     近7天 GMV
                   </p>
