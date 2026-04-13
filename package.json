@@ -16,6 +16,7 @@
     "seed": "ts-node --compiler-options '{\"module\":\"CommonJS\"}' prisma/seed.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.104",
     "@anthropic-ai/sdk": "^0.36.3",
     "@prisma/client": "^5.22.0",
     "class-variance-authority": "^0.7.1",
@@ -27,6 +28,7 @@
     "recharts": "^2.14.1",
     "tailwind-merge": "^2.5.4",
     "xlsx": "^0.18.5",
+    "zod": "^4.3.6",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

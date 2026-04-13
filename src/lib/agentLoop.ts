@@ -1,12 +1,14 @@
 /**
  * lib/agentLoop.ts
  *
- * 基于 Claude Agent SDK stream() 的工具调用循环。
+ * 基于 Claude Agent SDK query() 的 Agent 执行循环。
  *
- * 流式阶段：on("text") 实时推送 text_delta
- * 流结束后：检查 stop_reason 处理工具调用（非中途中断）
+ * SDK 自动处理工具调用循环，本文件负责：
+ * 1. 调用 query() 并传入 MCP 工具 + system prompt
+ * 2. 解析 SDKMessage 流，转换为 SSE 事件推送前端
+ * 3. 返回最终结果供调用方持久化
  *
- * onEvent 回调格式（SSE 事件）：
+ * SSE 事件格式（与前端 ChatPanel.tsx 兼容）：
  *   { type: "session_start", sessionId: string }
  *   { type: "text_delta",   delta: string }
  *   { type: "tool_start",   tool: string, input: object }
@@ -15,10 +17,10 @@
  *   { type: "error",        message: string }
  */
 
-import Anthropic from "@anthropic-ai/sdk"
-import { executeTool } from "./skills/index"
+import { query } from "@anthropic-ai/claude-agent-sdk"
+import { yzOpsMcpServer } from "./mcpTools"
 
-const MAX_ITERATIONS = 10
+const MAX_TURNS = 10
 
 export interface ToolCallRecord {
   tool:          string
@@ -27,96 +29,144 @@ export interface ToolCallRecord {
 }
 
 export interface AgentLoopResult {
-  role:      "assistant"
-  content:   string
-  toolCalls: ToolCallRecord[]
+  role:         "assistant"
+  content:      string
+  toolCalls:    ToolCallRecord[]
+  sdkSessionId: string | null
 }
 
 /**
- * 构建工具结果摘要（截断过长的 JSON 输出）
+ * 从 MCP 工具名中提取短名（去掉 mcp__yz-ops__ 前缀）
  */
-function buildResultSummary(toolName: string, result: string): string {
+function shortToolName(name: string): string {
+  return name.replace(/^mcp__yz-ops__/, "")
+}
+
+/**
+ * 构建工具结果摘要（从 tool_result content 中提取）
+ */
+function buildResultSummary(toolName: string, content: string): string {
   try {
-    const obj = JSON.parse(result)
+    const obj = JSON.parse(content)
     if (obj.error) return `错误: ${obj.error}`
-    // 若是数组，汇报行数
     if (Array.isArray(obj)) return `返回 ${obj.length} 条记录`
     if (obj.rows && Array.isArray(obj.rows)) return `返回 ${obj.rows.length} 条记录（共 ${obj.total ?? obj.rows.length} 条）`
     if (obj.alerts && Array.isArray(obj.alerts)) return `发现 ${obj.alerts.length} 条告警`
-    // 通用截断
     const s = JSON.stringify(obj)
     return s.length > 200 ? s.slice(0, 200) + "…" : s
   } catch {
-    return result.slice(0, 200)
+    return content.slice(0, 200)
   }
 }
 
 export async function runAgentLoop(
-  sessionId:    string,
-  messages:     Anthropic.MessageParam[],
-  systemPrompt: string,
-  skillTools:   Anthropic.Tool[],
-  onEvent:      (event: object) => void
+  sessionId:      string,
+  userMessage:    string,
+  systemPrompt:   string,
+  onEvent:        (event: object) => void,
+  sdkSessionId?:  string | null,
 ): Promise<AgentLoopResult> {
-  const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  let   history   = [...messages]
   const toolCalls: ToolCallRecord[] = []
-  let   fullText  = ""
+  let   fullText       = ""
+  let   resultSessionId: string | null = sdkSessionId ?? null
 
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    // 每轮使用 stream()，流式阶段实时推送 text_delta
-    const stream = client.messages.stream({
-      model:      "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system:     systemPrompt,
-      tools:      skillTools,
-      messages:   history,
-    })
+  // 跟踪当前活跃的 tool_use，用于匹配 tool_result
+  const pendingTools = new Map<string, { name: string; input: Record<string, unknown> }>()
 
-    // 流式阶段：text_delta 实时推送
-    stream.on("text", (text) => {
-      fullText += text
-      onEvent({ type: "text_delta", delta: text })
-    })
+  try {
+    for await (const message of query({
+      prompt: userMessage,
+      options: {
+        model:                  "sonnet",
+        maxTurns:               MAX_TURNS,
+        systemPrompt:           systemPrompt,
+        includePartialMessages: true,
+        permissionMode:         "bypassPermissions",
+        tools:                  [],                          // 移除所有内置工具
+        mcpServers:             { "yz-ops": yzOpsMcpServer },
+        allowedTools:           ["mcp__yz-ops__*"],
+        ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+      },
+    })) {
+      // ── system init ─────────────────────────────────────────────────────
+      if (message.type === "system" && "session_id" in message) {
+        resultSessionId = message.session_id as string
+        onEvent({ type: "session_start", sessionId })
+      }
 
-    // 等待流结束，取最终消息
-    const finalMsg = await stream.finalMessage()
+      // ── token 级流式（stream_event）────────────────────────────────────
+      if (message.type === "stream_event" && "event" in message) {
+        const event = (message as any).event
+        if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
+          const text = event.delta.text as string
+          fullText += text
+          onEvent({ type: "text_delta", delta: text })
+        }
+      }
 
-    // ── stop_reason = tool_use（流结束后处理，非中途）────────────────────────
-    if (finalMsg.stop_reason === "tool_use") {
-      const toolUseBlocks = finalMsg.content.filter(
-        (b: Anthropic.ContentBlock): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-      )
-      history.push({ role: "assistant", content: finalMsg.content })
-      fullText = "" // 工具调用轮次的文字不是最终回答，重置
-
-      const toolResults = await Promise.all(
-        toolUseBlocks.map(async (block: Anthropic.ToolUseBlock) => {
-          onEvent({ type: "tool_start", tool: block.name, input: block.input })
-          const result        = await executeTool(block.name, block.input as Record<string, unknown>)
-          const resultSummary = buildResultSummary(block.name, result)
-          onEvent({ type: "tool_done", tool: block.name, resultSummary })
-
-          toolCalls.push({ tool: block.name, input: block.input as Record<string, unknown>, resultSummary })
-
-          return {
-            type:        "tool_result" as const,
-            tool_use_id: block.id,
-            content:     result,
+      // ── assistant 消息（含 tool_use blocks）─────────────────────────────
+      if (message.type === "assistant" && "message" in message) {
+        const content = (message as any).message?.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "tool_use") {
+              const name  = shortToolName(block.name)
+              const input = block.input as Record<string, unknown>
+              pendingTools.set(block.id, { name, input })
+              onEvent({ type: "tool_start", tool: name, input })
+            }
+            // 非流式模式下收集文字（流式模式下已通过 stream_event 收集）
+            if (block.type === "text" && !fullText.includes(block.text)) {
+              fullText += block.text
+            }
           }
-        })
-      )
+        }
+      }
 
-      history.push({ role: "user", content: toolResults })
-      continue
-    }
+      // ── user 消息（含 tool_result）───────────────────────────────────────
+      if (message.type === "user" && "message" in message) {
+        const content = (message as any).message?.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === "tool_result" && block.tool_use_id) {
+              const pending = pendingTools.get(block.tool_use_id)
+              if (pending) {
+                const resultText = typeof block.content === "string"
+                  ? block.content
+                  : JSON.stringify(block.content)
+                const resultSummary = buildResultSummary(pending.name, resultText)
 
-    // ── stop_reason = end_turn（最终文字回答）────────────────────────────────
-    if (finalMsg.stop_reason === "end_turn") {
-      // fullText 已通过 stream.on("text") 累积
-      return { role: "assistant", content: fullText, toolCalls }
+                toolCalls.push({ tool: pending.name, input: pending.input, resultSummary })
+                onEvent({ type: "tool_done", tool: pending.name, resultSummary })
+                pendingTools.delete(block.tool_use_id)
+              }
+            }
+          }
+        }
+      }
+
+      // ── result 消息（完成）──────────────────────────────────────────────
+      if (message.type === "result") {
+        const result = message as any
+        resultSessionId = result.session_id ?? resultSessionId
+
+        if (result.subtype === "success") {
+          // 如果流式没有收集到文字，用 result.result 兜底
+          if (!fullText && result.result) {
+            fullText = result.result
+          }
+        } else {
+          // error_max_turns / error_during_execution / error_max_budget_usd
+          const errorMsg = result.errors?.join("; ") ?? result.subtype ?? "Agent 执行出错"
+          onEvent({ type: "error", message: errorMsg })
+        }
+      }
     }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    onEvent({ type: "error", message: errorMsg })
+    return { role: "assistant", content: fullText || errorMsg, toolCalls, sdkSessionId: resultSessionId }
   }
 
-  throw new Error(`超过最大工具调用次数（${MAX_ITERATIONS}次）`)
+  return { role: "assistant", content: fullText, toolCalls, sdkSessionId: resultSessionId }
 }
