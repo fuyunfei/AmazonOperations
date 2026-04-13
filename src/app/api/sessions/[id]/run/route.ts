@@ -12,27 +12,13 @@
 import { NextRequest } from "next/server"
 import { db } from "@/lib/db"
 import { buildAgentSystemPrompt } from "@/lib/buildSystemPrompt"
-import { getSessionSkillTools, getSkillIndex } from "@/lib/skills/index"
 import { runAgentLoop } from "@/lib/agentLoop"
-import type Anthropic from "@anthropic-ai/sdk"
-
-/** 从 DB Message[] 重建 Anthropic API messages 数组（仅含 user/assistant 文字轮次） */
-function buildApiMessages(
-  dbMessages: Array<{ role: string; content: string }>
-): Anthropic.MessageParam[] {
-  return dbMessages
-    .filter(m => m.content.trim() !== "")
-    .map(m => ({
-      role:    m.role as "user" | "assistant",
-      content: m.content,
-    }))
-}
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const { userMessage } = await req.json() as { userMessage: string }
+  const { userMessage, model } = await req.json() as { userMessage: string; model?: string }
   const sessionId = params.id
 
   const stream  = new TransformStream()
@@ -46,34 +32,30 @@ export async function POST(
   // 异步执行 agent loop（不阻塞 SSE 响应返回）
   ;(async () => {
     try {
-      send({ type: "session_start", sessionId })
-
-      // 1. 从 DB 加载历史（最近 40 条 = 最近 20 轮 user+assistant 对）
-      const dbMessages = await db.message.findMany({
-        where:   { sessionId },
-        orderBy: { createdAt: "asc" },
-        take:    40,
-      })
-      const history = buildApiMessages(dbMessages)
-
-      // 追加本轮用户消息
-      history.push({ role: "user", content: userMessage })
+      // 1. 查询 Session，获取 SDK session ID（用于 resume 续接多轮对话）
+      const session = await db.session.findUnique({ where: { id: sessionId } })
+      const sdkSessionId = session?.sdkSessionId ?? null
 
       // 2. 构建 System Prompt（每次重新拉取，感知新上传文件）
-      //    注入技能索引（对应 Agent SDK settingSources: ["project"]）
-      const [basePrompt, skillIndex] = await Promise.all([
-        buildAgentSystemPrompt(),
-        Promise.resolve(getSkillIndex()),
-      ])
-      const systemPrompt = skillIndex
-        ? `${basePrompt}\n\n${skillIndex}`
-        : basePrompt
+      const systemPrompt = await buildAgentSystemPrompt()
 
-      // 3. 获取本 Session 挂载的 Skill 工具集（对应 Agent SDK allowedTools）
-      const skillTools = await getSessionSkillTools(sessionId)
+      // 3. 执行 Agent Loop（SDK 自动处理工具调用循环）
+      const result = await runAgentLoop(
+        sessionId,
+        userMessage,
+        systemPrompt,
+        send,
+        sdkSessionId,
+        model,
+      )
 
-      // 4. 执行 Agent Loop
-      const result = await runAgentLoop(sessionId, history, systemPrompt, skillTools, send)
+      // 4. 持久化 SDK session ID（首次对话后写入，后续用于 resume）
+      if (result.sdkSessionId && result.sdkSessionId !== sdkSessionId) {
+        await db.session.update({
+          where: { id: sessionId },
+          data:  { sdkSessionId: result.sdkSessionId },
+        })
+      }
 
       // 5. 持久化：写入 user + assistant 消息
       const [, savedAssistant] = await Promise.all([
