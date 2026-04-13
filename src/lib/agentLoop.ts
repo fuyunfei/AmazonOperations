@@ -88,9 +88,9 @@ export async function runAgentLoop(
         ...(sdkSessionId ? { resume: sdkSessionId } : {}),
       },
     })) {
-      // ── system init ─────────────────────────────────────────────────────
-      if (message.type === "system" && "session_id" in message) {
-        resultSessionId = message.session_id as string
+      // ── system init（仅 subtype=init 时触发一次）──────────────────────
+      if (message.type === "system" && (message as any).subtype === "init") {
+        resultSessionId = (message as any).session_id as string
         onEvent({ type: "session_start", sessionId })
       }
 
