@@ -11,6 +11,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { InventoryMatrixChart, type InventoryMatrixItem } from "@/components/charts/InventoryMatrixChart";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRow = Record<string, any>;
@@ -47,6 +48,19 @@ export default function InventoryPanel() {
   const [data, setData]       = useState<InventoryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
+  const [matrixData, setMatrixData] = useState<InventoryMatrixItem[]>([]);
+
+  /* Fetch inventory matrix chart data */
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (activeCategoryKey) params.set("categoryKey", activeCategoryKey);
+    fetch(`/api/features/inventory-matrix?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.data) setMatrixData(d.data as InventoryMatrixItem[]);
+      })
+      .catch(() => {});
+  }, [activeCategoryKey]);
 
   useEffect(() => {
     setLoading(true);
@@ -108,6 +122,11 @@ export default function InventoryPanel() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* Inventory Matrix Chart */}
+      {!loading && matrixData.length > 0 && (
+        <InventoryMatrixChart data={matrixData} />
       )}
 
       {!loading && data && data.rows.length > 0 && (

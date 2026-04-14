@@ -12,6 +12,7 @@ import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { AsinScatterChart, type AsinScatterItem } from "@/components/charts/AsinScatterChart";
 
 type Window = "today" | "yesterday" | "w7" | "w14" | "d30";
 
@@ -85,6 +86,19 @@ export default function KPIPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dailyData, setDailyData] = useState<Array<{ date: string; acos: number; gmv: number }>>([]);
+  const [scatterData, setScatterData] = useState<AsinScatterItem[]>([]);
+
+  /* Fetch ASIN scatter chart data */
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (activeCategoryKey) params.set("categoryKey", activeCategoryKey);
+    fetch(`/api/features/asin-scatter?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.data) setScatterData(d.data as AsinScatterItem[]);
+      })
+      .catch(() => {});
+  }, [activeCategoryKey]);
 
   useEffect(() => {
     setLoading(true);
@@ -201,6 +215,11 @@ export default function KPIPanel() {
                 </ChartContainer>
               </CardContent>
             </Card>
+          )}
+
+          {/* ASIN Efficiency Scatter Chart */}
+          {scatterData.length > 0 && (
+            <AsinScatterChart data={scatterData} />
           )}
 
           {/* Per-ASIN detail table */}
