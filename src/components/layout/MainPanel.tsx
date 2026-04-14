@@ -17,7 +17,7 @@ export default function MainPanel() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Panel content */}
-      <div className="flex-1 overflow-auto bg-background">
+      <div className="flex-1 overflow-hidden flex flex-col bg-background">
         {activeNav === "overview" && <ErrorBoundary><OverviewPanel key="overview" /></ErrorBoundary>}
         {activeNav === "chat"     && <ErrorBoundary><ChatPanel     key="chat" /></ErrorBoundary>}
         {isCategory && activeFuncTab === "kpi"       && <ErrorBoundary><KPIPanel       key={categoryKey} /></ErrorBoundary>}

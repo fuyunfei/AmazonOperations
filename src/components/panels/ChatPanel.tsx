@@ -380,7 +380,7 @@ export default function ChatPanel() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full bg-background">
+    <div className="flex flex-1 bg-background">
 
       {/* ── 左栏：Session 列表 ─────────────────────────────────────────────── */}
       <div className="flex flex-col flex-shrink-0 w-[220px] border-r border-border bg-muted/50">
