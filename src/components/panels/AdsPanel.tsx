@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import {
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from "@/components/ui/table";
+import { SearchScatterChart } from "@/components/charts/SearchScatterChart";
 
 type Source = "campaign_3m" | "search_terms";
 
@@ -142,6 +143,9 @@ export default function AdsPanel() {
   const [data, setData]       = useState<AdsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
+  const [scatterData, setScatterData] = useState<Array<{
+    term: string; clicks: number; cvr: number; acos: number | null; spend: number; orders: number;
+  }> | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -158,6 +162,15 @@ export default function AdsPanel() {
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [activeCategoryKey, source]);
+
+  useEffect(() => {
+    fetch("/api/features/search-scatter")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.data) setScatterData(d.data as typeof scatterData);
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="h-full overflow-y-auto p-6 bg-background">
@@ -189,6 +202,13 @@ export default function AdsPanel() {
           ))}
         </div>
       </div>
+
+      {/* Search Term Scatter Chart */}
+      {scatterData && scatterData.length > 0 && (
+        <div className="mb-6">
+          <SearchScatterChart data={scatterData} />
+        </div>
+      )}
 
       {loading && <PanelSkeleton />}
 

@@ -8,6 +8,8 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
 import { AdFunnelChart, type FunnelData } from "@/components/charts/FunnelChart";
+import { CategoryTrendChart } from "@/components/charts/CategoryTrendChart";
+import { TACoSTrendChart } from "@/components/charts/TACoSTrendChart";
 import { AlertTriangle, Bed, Wrench, Bike, Package, FileUp, DollarSign, ShoppingCart, TrendingUp, Percent } from "lucide-react";
 import { PanelSkeleton } from "@/components/ui/panel-skeleton";
 import { Card, CardContent } from "@/components/ui/card";
@@ -158,6 +160,10 @@ export default function OverviewPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [funnelData, setFunnelData] = useState<FunnelData[] | null>(null);
+  const [categoryTrend, setCategoryTrend] = useState<{
+    data: Array<Record<string, string | number>>;
+    categories: Array<{ key: string; label: string }>;
+  } | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -178,6 +184,17 @@ export default function OverviewPanel() {
     fetch("/api/features/funnel?window=w7")
       .then((r) => r.json())
       .then((d) => { if (d.funnel) setFunnelData(d.funnel as FunnelData[]); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/features/category-trend")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.data && d.categories) {
+          setCategoryTrend({ data: d.data as Array<Record<string, string | number>>, categories: d.categories as Array<{ key: string; label: string }> });
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -205,6 +222,12 @@ export default function OverviewPanel() {
   const dailyTotalsWithAcos = data.dailyTotals.map((d) => ({
     ...d,
     acos: d.ad_sales > 0 ? d.ad_spend / d.ad_sales : 0,
+  }));
+
+  /* Compute TACoS trend from existing dailyTotals */
+  const tacosData = data.dailyTotals.map((d) => ({
+    date: d.date.slice(5),
+    tacos: d.gmv > 0 ? +((d.ad_spend / d.gmv) * 100).toFixed(1) : 0,
   }));
 
   /* Previous ACoS */
@@ -340,6 +363,20 @@ export default function OverviewPanel() {
       {funnelData && (
         <div className="mb-6">
           <AdFunnelChart data={funnelData} title="广告转化漏斗（近7天）" />
+        </div>
+      )}
+
+      {/* Category GMV Stacked Trend */}
+      {categoryTrend && (
+        <div className="mb-6">
+          <CategoryTrendChart data={categoryTrend.data} categories={categoryTrend.categories} />
+        </div>
+      )}
+
+      {/* TACoS Trend */}
+      {tacosData.length > 0 && (
+        <div className="mb-6">
+          <TACoSTrendChart data={tacosData} />
         </div>
       )}
 
