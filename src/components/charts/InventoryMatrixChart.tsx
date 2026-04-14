@@ -50,6 +50,18 @@ const chartConfig = {
   daysOfSupply: { label: "库存天数", color: "#06b6d4" },
 } satisfies ChartConfig
 
+function generateInventoryInsight(data: InventoryMatrixItem[]): string {
+  const critical = data.filter((d) => d.quadrant === "critical")
+  if (critical.length > 0) {
+    const names = critical.map((d) => d.label || d.asin.slice(-5)).join("、")
+    return `🔴 ${critical.length} 个产品库存紧急：${names}，建议立即安排补货`
+  }
+  const warning = data.filter((d) => d.quadrant === "warning")
+  if (warning.length > 0)
+    return `🟡 ${warning.length} 个产品库存偏低，建议本周安排补货计划`
+  return "✅ 全部产品库存充足"
+}
+
 export function InventoryMatrixChart({
   data,
 }: {
@@ -68,6 +80,16 @@ export function InventoryMatrixChart({
       color: QUADRANT_COLORS[q] ?? "#6b7280",
     }))
   }, [data])
+
+  const quadrantCounts = useMemo(() => {
+    const critical = data.filter((d) => d.quadrant === "critical")
+    const warning = data.filter((d) => d.quadrant === "warning")
+    const healthy = data.filter((d) => d.quadrant === "healthy")
+    const stale = data.filter((d) => d.quadrant === "stale" || d.quadrant === "observe")
+    return { critical, warning, healthy, stale }
+  }, [data])
+
+  const insight = useMemo(() => generateInventoryInsight(data), [data])
 
   if (data.length === 0) return null
 
@@ -212,13 +234,31 @@ export function InventoryMatrixChart({
           </ScatterChart>
         </ChartContainer>
 
-        {/* Quadrant explanation */}
-        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <span>高速+低库存 = 紧急补货</span>
-          <span>高速+高库存 = 健康</span>
-          <span>低速+高库存 = 滞销风险</span>
-          <span>低速+低库存 = 观察</span>
+        {/* Quadrant summary cards */}
+        <div className="grid grid-cols-4 gap-2 mt-4">
+          <div className="rounded-md bg-red-50 p-2 text-center">
+            <p className="text-lg font-bold text-destructive">{quadrantCounts.critical.length}</p>
+            <p className="text-[10px] text-destructive">紧急补货</p>
+            <p className="text-[10px] text-muted-foreground">&lt;30天</p>
+          </div>
+          <div className="rounded-md bg-amber-50 p-2 text-center">
+            <p className="text-lg font-bold text-amber-700">{quadrantCounts.warning.length}</p>
+            <p className="text-[10px] text-amber-600">准备补货</p>
+            <p className="text-[10px] text-muted-foreground">30-45天</p>
+          </div>
+          <div className="rounded-md bg-emerald-50 p-2 text-center">
+            <p className="text-lg font-bold text-emerald-700">{quadrantCounts.healthy.length}</p>
+            <p className="text-[10px] text-emerald-600">库存健康</p>
+            <p className="text-[10px] text-muted-foreground">&gt;45天</p>
+          </div>
+          <div className="rounded-md bg-muted p-2 text-center">
+            <p className="text-lg font-bold text-muted-foreground">{quadrantCounts.stale.length}</p>
+            <p className="text-[10px] text-muted-foreground">滞销/观察</p>
+          </div>
         </div>
+
+        {/* Auto-insight */}
+        <p className="mt-3 text-xs text-muted-foreground">{insight}</p>
       </CardContent>
     </Card>
   )

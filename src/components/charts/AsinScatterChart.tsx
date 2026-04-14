@@ -9,6 +9,7 @@ import {
   ReferenceLine,
   ZAxis,
   Label,
+  LabelList,
   Cell,
 } from "recharts"
 import {
@@ -39,16 +40,34 @@ const chartConfig = {
   adSpend: { label: "广告花费 ($)", color: "#8b5cf6" },
 } satisfies ChartConfig
 
+function generateAsinInsight(data: AsinScatterItem[]): string {
+  const inefficient = data.filter((d) => d.acos >= 0.55)
+  if (inefficient.length > 0) {
+    const topWaste = inefficient.sort((a, b) => b.adSpend - a.adSpend)[0]
+    return `⚠️ ${inefficient.length} 个产品 ACoS > 55%，最高花费 ASIN ...${topWaste.asin.slice(-5)}（$${topWaste.adSpend.toLocaleString()}），建议优先优化`
+  }
+  return "✅ 全部产品广告效率在健康范围内"
+}
+
 export function AsinScatterChart({ data }: { data: AsinScatterItem[] }) {
-  // Transform acos to percentage for display
+  // Transform acos to percentage for display, add short label
   const chartData = useMemo(
     () =>
       data.map((d) => ({
         ...d,
         acosPercent: +(d.acos * 100).toFixed(1),
+        label: `...${d.asin.slice(-5)}`,
       })),
     [data]
   )
+
+  const { efficient, moderate, inefficient } = useMemo(() => ({
+    efficient: data.filter((d) => d.acos < 0.35),
+    moderate: data.filter((d) => d.acos >= 0.35 && d.acos < 0.55),
+    inefficient: data.filter((d) => d.acos >= 0.55),
+  }), [data])
+
+  const insight = useMemo(() => generateAsinInsight(data), [data])
 
   const legendItems = [
     { label: "ACoS <35%", color: "#22c55e" },
@@ -178,9 +197,32 @@ export function AsinScatterChart({ data }: { data: AsinScatterItem[] }) {
                   strokeWidth={1}
                 />
               ))}
+              <LabelList dataKey="label" position="top" fontSize={10} className="fill-muted-foreground" />
             </Scatter>
           </ScatterChart>
         </ChartContainer>
+
+        {/* Efficiency summary cards */}
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          <div className="rounded-md bg-emerald-50 p-2 text-center">
+            <p className="text-lg font-bold text-emerald-700">{efficient.length}</p>
+            <p className="text-[10px] text-emerald-600">高效产品</p>
+            <p className="text-[10px] text-muted-foreground">ACoS &lt; 35%</p>
+          </div>
+          <div className="rounded-md bg-amber-50 p-2 text-center">
+            <p className="text-lg font-bold text-amber-700">{moderate.length}</p>
+            <p className="text-[10px] text-amber-600">待优化</p>
+            <p className="text-[10px] text-muted-foreground">35-55%</p>
+          </div>
+          <div className="rounded-md bg-red-50 p-2 text-center">
+            <p className="text-lg font-bold text-destructive">{inefficient.length}</p>
+            <p className="text-[10px] text-destructive">低效产品</p>
+            <p className="text-[10px] text-muted-foreground">ACoS &gt; 55%</p>
+          </div>
+        </div>
+
+        {/* Auto-insight */}
+        <p className="mt-3 text-xs text-muted-foreground">{insight}</p>
       </CardContent>
     </Card>
   )

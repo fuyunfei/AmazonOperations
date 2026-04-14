@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
-import { AdFunnelChart, type FunnelData } from "@/components/charts/FunnelChart";
+import { AdFunnelChart, type FunnelData, type AsinFunnel } from "@/components/charts/FunnelChart";
 import { CategoryTrendChart } from "@/components/charts/CategoryTrendChart";
 import { TACoSTrendChart } from "@/components/charts/TACoSTrendChart";
 import { AlertTriangle, Bed, Wrench, Bike, Package, FileUp, DollarSign, ShoppingCart, TrendingUp, Percent } from "lucide-react";
@@ -160,6 +160,7 @@ export default function OverviewPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [funnelData, setFunnelData] = useState<FunnelData[] | null>(null);
+  const [funnelByAsin, setFunnelByAsin] = useState<AsinFunnel[] | null>(null);
   const [categoryTrend, setCategoryTrend] = useState<{
     data: Array<Record<string, string | number>>;
     categories: Array<{ key: string; label: string }>;
@@ -183,7 +184,10 @@ export default function OverviewPanel() {
   useEffect(() => {
     fetch("/api/features/funnel?window=w7")
       .then((r) => r.json())
-      .then((d) => { if (d.funnel) setFunnelData(d.funnel as FunnelData[]); })
+      .then((d) => {
+        if (d.funnel) setFunnelData(d.funnel as FunnelData[]);
+        if (d.byAsin) setFunnelByAsin(d.byAsin as AsinFunnel[]);
+      })
       .catch(() => {});
   }, []);
 
@@ -224,10 +228,11 @@ export default function OverviewPanel() {
     acos: d.ad_sales > 0 ? d.ad_spend / d.ad_sales : 0,
   }));
 
-  /* Compute TACoS trend from existing dailyTotals */
+  /* Compute TACoS + ACoS trend from existing dailyTotals */
   const tacosData = data.dailyTotals.map((d) => ({
     date: d.date.slice(5),
     tacos: d.gmv > 0 ? +((d.ad_spend / d.gmv) * 100).toFixed(1) : 0,
+    acos: d.ad_sales > 0 ? +((d.ad_spend / d.ad_sales) * 100).toFixed(1) : 0,
   }));
 
   /* Previous ACoS */
@@ -362,7 +367,7 @@ export default function OverviewPanel() {
       {/* Ad Conversion Funnel */}
       {funnelData && (
         <div className="mb-6">
-          <AdFunnelChart data={funnelData} title="广告转化漏斗（近7天）" />
+          <AdFunnelChart data={funnelData} byAsin={funnelByAsin ?? undefined} title="广告转化漏斗（近7天）" />
         </div>
       )}
 

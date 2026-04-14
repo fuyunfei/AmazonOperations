@@ -83,6 +83,14 @@ function CustomTooltip({
   )
 }
 
+function generateSearchInsight(data: ScatterPoint[]): string {
+  const moneyPits = data.filter((d) => d.clicks >= CLICK_THRESHOLD && d.cvr < CVR_THRESHOLD)
+  const totalWaste = moneyPits.reduce((s, d) => s + d.spend, 0)
+  if (moneyPits.length > 0)
+    return `⚠️ ${moneyPits.length} 个高点击零/低转化词，累计浪费 $${totalWaste.toFixed(0)}，建议立即否定`
+  return "✅ 搜索词结构健康，无高浪费词"
+}
+
 export function SearchScatterChart({ data }: SearchScatterChartProps) {
   const grouped = useMemo(() => {
     const groups: Record<string, Array<ScatterPoint & { quadrant: string }>> = {
@@ -102,6 +110,18 @@ export function SearchScatterChart({ data }: SearchScatterChartProps) {
     () => Math.max(...data.map((d) => d.spend), 1),
     [data]
   )
+
+  const { winners, moneyPits, potential, low } = useMemo(() => {
+    const w = data.filter((d) => d.clicks >= CLICK_THRESHOLD && d.cvr >= CVR_THRESHOLD)
+    const m = data.filter((d) => d.clicks >= CLICK_THRESHOLD && d.cvr < CVR_THRESHOLD)
+    const p = data.filter((d) => d.clicks < CLICK_THRESHOLD && d.cvr >= CVR_THRESHOLD)
+    const l = data.filter((d) => d.clicks < CLICK_THRESHOLD && d.cvr < CVR_THRESHOLD)
+    return { winners: w, moneyPits: m, potential: p, low: l }
+  }, [data])
+
+  const totalWaste = useMemo(() => moneyPits.reduce((s, d) => s + d.spend, 0), [moneyPits])
+  const totalWinnerSpend = useMemo(() => winners.reduce((s, d) => s + d.spend, 0), [winners])
+  const insight = useMemo(() => generateSearchInsight(data), [data])
 
   return (
     <Card>
@@ -186,6 +206,31 @@ export function SearchScatterChart({ data }: SearchScatterChartProps) {
             )}
           </ScatterChart>
         </ChartContainer>
+
+        {/* Quadrant summary cards */}
+        <div className="grid grid-cols-4 gap-2 mt-4">
+          <div className="rounded-md bg-emerald-50 p-2 text-center">
+            <p className="text-lg font-bold text-emerald-700">{winners.length}</p>
+            <p className="text-[10px] text-emerald-600">赢家词</p>
+            <p className="text-[10px] text-muted-foreground">花费 ${totalWinnerSpend.toFixed(0)}</p>
+          </div>
+          <div className="rounded-md bg-red-50 p-2 text-center">
+            <p className="text-lg font-bold text-destructive">{moneyPits.length}</p>
+            <p className="text-[10px] text-destructive">烧钱词</p>
+            <p className="text-[10px] text-muted-foreground">浪费 ${totalWaste.toFixed(0)}</p>
+          </div>
+          <div className="rounded-md bg-blue-50 p-2 text-center">
+            <p className="text-lg font-bold text-blue-700">{potential.length}</p>
+            <p className="text-[10px] text-blue-600">潜力词</p>
+          </div>
+          <div className="rounded-md bg-muted p-2 text-center">
+            <p className="text-lg font-bold text-muted-foreground">{low.length}</p>
+            <p className="text-[10px] text-muted-foreground">低效词</p>
+          </div>
+        </div>
+
+        {/* Auto-insight */}
+        <p className="mt-3 text-xs text-muted-foreground">{insight}</p>
       </CardContent>
     </Card>
   )
